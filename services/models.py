@@ -48,7 +48,6 @@ class ServiceRequest(models.Model):
 
 
 class AirportPickup(models.Model):
-    """Available to all members. Shows in dashboard. Sends reminder when time approaches."""
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     service_request  = models.OneToOneField(ServiceRequest, on_delete=models.CASCADE, related_name='airport_pickup_details')
@@ -72,7 +71,6 @@ class AirportPickup(models.Model):
 
 
 class HomeInspection(models.Model):
-    """GOLD MEMBERS ONLY — remote house inspection before migrating."""
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     service_request  = models.OneToOneField(ServiceRequest, on_delete=models.CASCADE, related_name='home_inspection_details')
@@ -95,7 +93,6 @@ class HomeInspection(models.Model):
 
 
 class ChaperoneService(models.Model):
-    """Helps new immigrants with on-ground tasks: SIM, TFN, registration, translation."""
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     HELP_TYPES = [
@@ -120,7 +117,6 @@ class ChaperoneService(models.Model):
 
 
 class JobApplicationAssistance(models.Model):
-    """Job help — paired with Migration Specialist. May link to external job sites."""
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     service_request   = models.OneToOneField(ServiceRequest, on_delete=models.CASCADE, related_name='job_application_details')
@@ -137,8 +133,42 @@ class JobApplicationAssistance(models.Model):
         db_table = 'job_application_assistance'
 
 
+class ServiceProviderProfile(models.Model):
+    """
+    A user registers for one or more service types they want to offer.
+    Each registration is a separate row — one profile per service type per user.
+    Location is city-level: a Lagos driver only sees Lagos pickups.
+    """
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+
+    SERVICE_TYPES = [
+        ('airport_pickup',  'Driver'),
+        ('home_inspection', 'Home Inspector'),
+        ('chaperon',        'Chaperone'),
+        ('job_application', 'Job Application Assistant'),
+    ]
+    # Note: migration_specialist is excluded here — it has its own application flow
+
+    user         = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='provider_profiles')
+    service_type = models.CharField(max_length=30, choices=SERVICE_TYPES)
+    country_code = models.CharField(max_length=2)
+    city         = models.CharField(max_length=100)  # strict city-level matching
+    bio          = models.TextField(blank=True)
+    is_active    = models.BooleanField(default=True)
+    registered_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'service_provider_profiles'
+        unique_together = ('user', 'service_type')
+
+    def __str__(self):
+        return f"{self.user} – {self.get_service_type_display()} in {self.city}"
+
+
 class MigrationSpecialist(models.Model):
-    """Registered specialist profile. Advises new immigrants on jobs, housing, settlement."""
+    """
+    Verified specialist profile — only created after admin approves application.
+    """
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     user             = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='specialist_profile')
@@ -161,8 +191,45 @@ class MigrationSpecialist(models.Model):
         return f"Specialist – {self.user}"
 
 
+class MigrationSpecialistApplication(models.Model):
+    """
+    A user applies to become a migration specialist.
+    Admin reviews and approves or rejects.
+    On approval, a MigrationSpecialist profile is automatically created.
+    """
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+
+    STATUS = [
+        ('pending',  'Pending Review'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    user             = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='specialist_application')
+    bio              = models.TextField()
+    qualifications   = models.TextField()
+    countries_served = models.JSONField(default=list)
+    languages        = models.JSONField(default=list)
+    hourly_rate      = models.DecimalField(max_digits=8, decimal_places=2)
+    currency         = models.CharField(max_length=3)
+
+    status           = models.CharField(max_length=10, choices=STATUS, default='pending')
+    rejection_reason = models.TextField(blank=True)
+    reviewed_by      = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='reviewed_applications'
+    )
+    reviewed_at  = models.DateTimeField(null=True, blank=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'migration_specialist_applications'
+
+    def __str__(self):
+        return f"Application – {self.user} ({self.status})"
+
+
 class ServiceReview(models.Model):
-    """Rating and review left after a service is completed."""
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     service_request = models.OneToOneField(ServiceRequest, on_delete=models.CASCADE, related_name='review')
