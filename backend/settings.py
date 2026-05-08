@@ -10,17 +10,24 @@ DEBUG = True
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
+    # ── Django Core ──────────────────────────────────────────────────────────
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+
+    # ── Third-party ──────────────────────────────────────────────────────────
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
     'django_filters',
     'drf_spectacular',
+    'channels',            # ← WebSocket support
+    'strawberry_django',   # ← GraphQL support
+
+    # ── Local Apps ───────────────────────────────────────────────────────────
     'users',
     'memberships',
     'shops',
@@ -42,6 +49,9 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'backend.urls'
 
+# ─── ASGI (replaces WSGI for WebSocket support) ───────────────────────────────
+ASGI_APPLICATION = 'backend.asgi.application'  # ← Changed from WSGI
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
@@ -57,8 +67,6 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'backend.wsgi.application'
-
 # ─── PostgreSQL Database ──────────────────────────────────────────────────────
 DATABASES = {
     'default': {
@@ -71,15 +79,23 @@ DATABASES = {
     }
 }
 
+# ─── Redis Channel Layer (required for WebSocket broadcast) ───────────────────
+# Redis allows multiple server processes to share WebSocket state.
+# Make sure Redis is running: `redis-server` or install via https://redis.io/
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            'hosts': [('127.0.0.1', 6379)],
+        },
+    },
+}
+
 AUTH_USER_MODEL = 'users.User'
 
-# ─── Password Hashing ─────────────────────────────────────────────────────────
-# Argon2id is the winner of the Password Hashing Competition (PHC).
-# It is stronger than bcrypt and scrypt. Django will use the first hasher
-# in this list for NEW passwords, and automatically upgrade old ones on login.
 PASSWORD_HASHERS = [
-    'django.contrib.auth.hashers.Argon2PasswordHasher',   # PRIMARY — strongest
-    'django.contrib.auth.hashers.PBKDF2PasswordHasher',   # fallback for old passwords
+    'django.contrib.auth.hashers.Argon2PasswordHasher',
+    'django.contrib.auth.hashers.PBKDF2PasswordHasher',
     'django.contrib.auth.hashers.PBKDF2SHA1PasswordHasher',
     'django.contrib.auth.hashers.BCryptSHA256PasswordHasher',
     'django.contrib.auth.hashers.ScryptPasswordHasher',

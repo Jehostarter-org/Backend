@@ -1,4 +1,3 @@
-  
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from django.conf import settings
@@ -19,12 +18,44 @@ class RegisterSerializer(serializers.ModelSerializer):
             'city', 'migration_status',
         ]
 
+    def validate_birth_country(self, value):
+        if value and len(value) != 2:
+            raise serializers.ValidationError(
+                'Use a 2-letter country code e.g. NG for Nigeria, AU for Australia, GB for UK.'
+            )
+        return value.upper() if value else value
+
+    def validate_current_country(self, value):
+        if not value:
+            return value
+        if len(value) != 2:
+            raise serializers.ValidationError(
+                'Use a 2-letter country code e.g. NG for Nigeria, AU for Australia, GB for UK.'
+            )
+        value = value.upper()
+        if value not in settings.SUPPORTED_COUNTRIES:
+            raise serializers.ValidationError(
+                f'{value} is not supported yet. Supported countries: {", ".join(settings.SUPPORTED_COUNTRIES)}'
+            )
+        return value
+
+    def validate_destination_country(self, value):
+        if not value:
+            return value
+        if len(value) != 2:
+            raise serializers.ValidationError(
+                'Use a 2-letter country code e.g. NG for Nigeria, AU for Australia, GB for UK.'
+            )
+        value = value.upper()
+        if value not in settings.SUPPORTED_COUNTRIES:
+            raise serializers.ValidationError(
+                f'{value} is not supported yet. Supported countries: {", ".join(settings.SUPPORTED_COUNTRIES)}'
+            )
+        return value
+
     def validate(self, data):
         if data['password'] != data.pop('password2'):
             raise serializers.ValidationError({'password': 'Passwords do not match.'})
-        country = data.get('current_country', '')
-        if country and country not in settings.SUPPORTED_COUNTRIES:
-            raise serializers.ValidationError({'current_country': 'Country not currently supported.'})
         return data
 
     def create(self, validated_data):
@@ -36,7 +67,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
-    currency       = serializers.ReadOnlyField()
+    currency        = serializers.ReadOnlyField()
     membership_plan = serializers.ReadOnlyField()
 
     class Meta:
@@ -48,7 +79,9 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'city', 'state_province', 'migration_status',
             'currency', 'membership_plan', 'created_at',
         ]
-        read_only_fields = ['id', 'is_verified', 'currency', 'membership_plan', 'created_at']
+        read_only_fields = [
+            'id', 'is_verified', 'currency', 'membership_plan', 'created_at'
+        ]
 
 
 class UserUpdateSerializer(serializers.ModelSerializer):
@@ -61,6 +94,29 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         ]
 
     def validate_current_country(self, value):
-        if value and value not in settings.SUPPORTED_COUNTRIES:
-            raise serializers.ValidationError('Country not currently supported.')
+        if not value:
+            return value
+        if len(value) != 2:
+            raise serializers.ValidationError(
+                'Use a 2-letter country code e.g. NG for Nigeria, AU for Australia.'
+            )
+        value = value.upper()
+        if value not in settings.SUPPORTED_COUNTRIES:
+            raise serializers.ValidationError(
+                f'{value} is not a supported country.'
+            )
+        return value
+
+    def validate_destination_country(self, value):
+        if not value:
+            return value
+        if len(value) != 2:
+            raise serializers.ValidationError(
+                'Use a 2-letter country code e.g. NG for Nigeria, AU for Australia.'
+            )
+        value = value.upper()
+        if value not in settings.SUPPORTED_COUNTRIES:
+            raise serializers.ValidationError(
+                f'{value} is not a supported country.'
+            )
         return value
