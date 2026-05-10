@@ -1,16 +1,17 @@
 from pathlib import Path
 from datetime import timedelta
+from decouple import config, Csv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure--)dhs8x%enc01ma-(1y2a+-vc41g*^ir*bepq@t(mb)i@a!m$u'
-
-DEBUG = True
-
-ALLOWED_HOSTS = ['*']
+# ─── Security ─────────────────────────────────────────────────────────────────
+# These values come from your .env file — never hardcoded here
+SECRET_KEY = config('SECRET_KEY')
+DEBUG       = config('DEBUG', cast=bool, default=False)
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv(), default='localhost,127.0.0.1')
 
 INSTALLED_APPS = [
-    # ── Django Core ──────────────────────────────────────────────────────────
+    # ── Django Core ───────────────────────────────────────────────────────────
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -18,16 +19,17 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
-    # ── Third-party ──────────────────────────────────────────────────────────
+    # ── Third-party ───────────────────────────────────────────────────────────
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
     'django_filters',
     'drf_spectacular',
-    'channels',            # ← WebSocket support
-    'strawberry_django',   # ← GraphQL support
+    'channels',
+    'strawberry_django',
+    'whitenoise',          # ← serves static files in production without a CDN
 
-    # ── Local Apps ───────────────────────────────────────────────────────────
+    # ── Local Apps ────────────────────────────────────────────────────────────
     'users',
     'memberships',
     'shops',
@@ -39,6 +41,7 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',   # ← right after SecurityMiddleware
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -48,9 +51,7 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'backend.urls'
-
-# ─── ASGI (replaces WSGI for WebSocket support) ───────────────────────────────
-ASGI_APPLICATION = 'backend.asgi.application'  # ← Changed from WSGI
+ASGI_APPLICATION = 'backend.asgi.application'
 
 TEMPLATES = [
     {
@@ -67,30 +68,29 @@ TEMPLATES = [
     },
 ]
 
-# ─── PostgreSQL Database ──────────────────────────────────────────────────────
+# ─── Database ─────────────────────────────────────────────────────────────────
 DATABASES = {
     'default': {
         'ENGINE':   'django.db.backends.postgresql',
-        'NAME':     'jehostarter',
-        'USER':     'postgres',
-        'PASSWORD': 'Benjamin*247',
-        'HOST':     'localhost',
-        'PORT':     '5432',
+        'NAME':     config('DB_NAME'),
+        'USER':     config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST':     config('DB_HOST', default='localhost'),
+        'PORT':     config('DB_PORT', default='5432'),
     }
 }
 
-# ─── Redis Channel Layer (required for WebSocket broadcast) ───────────────────
-# Redis allows multiple server processes to share WebSocket state.
-# Make sure Redis is running: `redis-server` or install via https://redis.io/
+# ─── Redis Channel Layer ──────────────────────────────────────────────────────
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [('127.0.0.1', 6379)],
+            'hosts': [config('REDIS_URL', default='redis://127.0.0.1:6379')],
         },
     },
 }
 
+# ─── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_USER_MODEL = 'users.User'
 
 PASSWORD_HASHERS = [
@@ -108,19 +108,43 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
-USE_I18N = True
-USE_TZ = True
+# ─── Static & Media Files ─────────────────────────────────────────────────────
+STATIC_URL   = '/static/'
+STATIC_ROOT  = BASE_DIR / 'staticfiles'   # where collectstatic dumps files
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-STATIC_URL = 'static/'
-MEDIA_URL = '/media/'
+MEDIA_URL  = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+# In development (.env has DEBUG=True) we allow all origins.
+# In production (.env has DEBUG=False) only the frontend domain is allowed.
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='')
+
+# ─── HTTPS / Security Headers (production only) ───────────────────────────────
+if not DEBUG:
+    SECURE_HSTS_SECONDS            = 31536000   # 1 year
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD            = True
+    SECURE_SSL_REDIRECT            = True
+    SESSION_COOKIE_SECURE          = True
+    CSRF_COOKIE_SECURE             = True
+    SECURE_BROWSER_XSS_FILTER      = True
+    SECURE_CONTENT_TYPE_NOSNIFF    = True
+    X_FRAME_OPTIONS                = 'DENY'
+
+# ─── Internationalisation ─────────────────────────────────────────────────────
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE     = 'UTC'
+USE_I18N      = True
+USE_TZ        = True
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CORS_ALLOW_ALL_ORIGINS = True
-
+# ─── REST Framework ───────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
@@ -138,18 +162,21 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
+# ─── JWT ──────────────────────────────────────────────────────────────────────
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
+    'ACCESS_TOKEN_LIFETIME':  timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
-    'ROTATE_REFRESH_TOKENS': True,
+    'ROTATE_REFRESH_TOKENS':  True,
 }
 
+# ─── API Docs ─────────────────────────────────────────────────────────────────
 SPECTACULAR_SETTINGS = {
-    'TITLE': 'Jehostarter API',
+    'TITLE':       'Jehostarter API',
     'DESCRIPTION': 'Migrant support platform API',
-    'VERSION': '1.0.0',
+    'VERSION':     '1.0.0',
 }
 
+# ─── Platform Config ──────────────────────────────────────────────────────────
 COUNTRY_CURRENCY_MAP = {
     'NG': 'NGN', 'GH': 'GHS', 'CM': 'XAF', 'KE': 'KES',
     'ZA': 'ZAR', 'ZW': 'USD', 'UG': 'UGX',
