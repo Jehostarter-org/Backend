@@ -10,6 +10,7 @@ from .serializers import (
     RegisterSerializer,
     UserProfileSerializer,
     UserUpdateSerializer,
+    EmailTokenObtainPairSerializer,
 )
 
 User = get_user_model()
@@ -28,16 +29,17 @@ class RegisterView(generics.CreateAPIView):
 class LoginView(TokenObtainPairView):
     """
     POST /api/users/login/
-    Returns access + refresh JWT tokens.
+    Accepts email OR username + password.
+    Returns { access, refresh } JWT tokens.
     """
+    serializer_class = EmailTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
 
 
 class MeView(generics.RetrieveUpdateAPIView):
     """
-    GET  /api/users/me/  — returns full profile of logged-in user
-    PUT  /api/users/me/  — full update
-    PATCH /api/users/me/ — partial update (recommended)
+    GET   /api/users/me/  — returns full profile of logged-in user
+    PATCH /api/users/me/  — partial update
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -53,8 +55,7 @@ class MeView(generics.RetrieveUpdateAPIView):
 class AvatarUploadView(APIView):
     """
     POST /api/users/avatar/
-    Handles avatar image upload separately from other profile fields.
-    Stays in DRF because file uploads are easier here than in GraphQL.
+    File upload stays in DRF — easier than GraphQL for multipart.
     """
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -69,7 +70,6 @@ class AvatarUploadView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Delete old avatar to save storage
         if user.avatar:
             user.avatar.delete(save=False)
 
@@ -85,8 +85,7 @@ class AvatarUploadView(APIView):
 class AcceptTermsView(APIView):
     """
     POST /api/users/accept-terms/
-    Records that the user has accepted the terms and conditions.
-    Called during onboarding — only works once.
+    Records terms acceptance. Called during onboarding.
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -99,7 +98,7 @@ class AcceptTermsView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        user.accepted_terms = True
+        user.accepted_terms    = True
         user.accepted_terms_at = timezone.now()
         user.save(update_fields=['accepted_terms', 'accepted_terms_at'])
 
@@ -112,23 +111,23 @@ class AcceptTermsView(APIView):
 class ChangePasswordView(APIView):
     """
     POST /api/users/change-password/
-    Requires the current password before setting a new one.
+    Requires current password before setting a new one.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        user = request.user
-        current_password = request.data.get('current_password')
-        new_password = request.data.get('new_password')
+        user          = request.user
+        current       = request.data.get('current_password')
+        new_password  = request.data.get('new_password')
         new_password2 = request.data.get('new_password2')
 
-        if not current_password or not new_password or not new_password2:
+        if not current or not new_password or not new_password2:
             return Response(
                 {'error': 'All fields are required.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not user.check_password(current_password):
+        if not user.check_password(current):
             return Response(
                 {'error': 'Current password is incorrect.'},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -158,14 +157,12 @@ class ChangePasswordView(APIView):
 class DeleteAccountView(APIView):
     """
     POST /api/users/delete-account/
-    Requires password confirmation before deleting.
-    Soft approach: deactivates the account rather than hard deleting,
-    so related data (posts, orders, reviews) stays intact.
+    Soft deletes — deactivates rather than hard deletes.
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        user = request.user
+        user     = request.user
         password = request.data.get('password')
 
         if not password:
@@ -180,7 +177,6 @@ class DeleteAccountView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Deactivate instead of hard delete — preserves data integrity
         user.is_active = False
         user.save(update_fields=['is_active'])
 
@@ -193,9 +189,101 @@ class DeleteAccountView(APIView):
 class PublicProfileView(generics.RetrieveAPIView):
     """
     GET /api/users/profile/<username>/
-    Anyone can view a public profile — no auth required.
+    Public — no auth required.
     """
-    queryset = User.objects.filter(is_active=True)
+    queryset         = User.objects.filter(is_active=True)
     serializer_class = UserProfileSerializer
     permission_classes = [permissions.AllowAny]
-    lookup_field = 'username'
+    lookup_field     = 'username'
+
+
+
+"""
+Add this to your users/views.py
+
+Also add to requirements.txt:
+  google-auth
+  google-auth-oauthlib
+
+And add to your .env:
+  GOOGLE_CLIENT_ID=282926972818-cgcmau1p3f7o20giscv70f6mvle09n5f.apps.googleusercontent.com
+  GOOGLE_CLIENT_SECRET=your-regenerated-secret-here
+"""
+
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+from rest_framework_simplejwt.tokens import RefreshToken
+from decouple import config
+
+
+class GoogleAuthView(APIView):
+    """
+    POST /api/users/auth/google/
+
+    Receives the Google ID token from the frontend.
+    Verifies it with Google, creates or retrieves the user,
+    and returns Django JWT tokens.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        credential = request.data.get('credential')
+
+        if not credential:
+            return Response(
+                {'error': 'Google credential is required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            # Verify the token with Google
+            google_client_id = config('GOOGLE_CLIENT_ID')
+            id_info = id_token.verify_oauth2_token(
+                credential,
+                google_requests.Request(),
+                google_client_id,
+            )
+        except ValueError as e:
+            return Response(
+                {'error': f'Invalid Google token: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        email      = id_info.get('email')
+        first_name = id_info.get('given_name', '')
+        last_name  = id_info.get('family_name', '')
+        picture    = id_info.get('picture', '')
+
+        if not email:
+            return Response(
+                {'error': 'Could not retrieve email from Google.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Get or create the user
+        user, created = User.objects.get_or_create(
+            email=email,
+            defaults={
+                'username':   email.split('@')[0],
+                'first_name': first_name,
+                'last_name':  last_name,
+                'is_verified': True,  # Google accounts are pre-verified
+            }
+        )
+
+        # Update name/picture if user already exists
+        if not created:
+            if not user.first_name:
+                user.first_name = first_name
+            if not user.last_name:
+                user.last_name = last_name
+            user.save(update_fields=['first_name', 'last_name'])
+
+        # Generate Django JWT tokens for this user
+        refresh = RefreshToken.for_user(user)
+
+        return Response({
+            'access':  str(refresh.access_token),
+            'refresh': str(refresh),
+            'created': created,  # True if new user, False if existing
+        }, status=status.HTTP_200_OK)

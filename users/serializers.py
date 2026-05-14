@@ -1,8 +1,43 @@
 from rest_framework import serializers
-from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model, authenticate
 from django.conf import settings
+from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
+
+
+class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
+    """
+    Override SimpleJWT to accept email instead of username.
+    The frontend sends { username: email, password } and we
+    look up the user by email before authenticating.
+    """
+    def validate(self, attrs):
+        # SimpleJWT uses 'username' as the field name by default
+        # We intercept it and treat it as an email
+        email_or_username = attrs.get('username', '')
+
+        # Try to find the user by email first, then by username
+        user = None
+        try:
+            user = User.objects.get(email=email_or_username)
+            # Replace the email with the actual username for authentication
+            attrs['username'] = user.username
+        except User.DoesNotExist:
+            # Fall through — let SimpleJWT handle it normally
+            pass
+
+        return super().validate(attrs)
+
+    @classmethod
+    def get_token(cls, user):
+        token = super().get_token(user)
+        # Add custom claims to the JWT payload
+        token['email']      = user.email
+        token['username']   = user.username
+        token['first_name'] = user.first_name
+        token['last_name']  = user.last_name
+        return token
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -78,6 +113,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
             'birth_country', 'current_country', 'destination_country',
             'city', 'state_province', 'migration_status',
             'currency', 'membership_plan', 'created_at',
+            'accepted_terms',
         ]
         read_only_fields = [
             'id', 'is_verified', 'currency', 'membership_plan', 'created_at'
