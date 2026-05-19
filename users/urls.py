@@ -2,16 +2,11 @@ from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
-    RegisterView,
-    LoginView,
-    MeView,
-    AvatarUploadView,
-    AcceptTermsView,
-    ChangePasswordView,
-    DeleteAccountView,
-    PublicProfileView,
-    GoogleAuthView,
+    RegisterView, LoginView, MeView, AvatarUploadView,
+    AcceptTermsView, ChangePasswordView, DeleteAccountView,
+    PublicProfileView, GoogleAuthView,
 )
+from .location_view import UpdateLocationView, DetectLocationView
 
 urlpatterns = [
     # ── Auth ──────────────────────────────────────────────────────────────────
@@ -26,6 +21,10 @@ urlpatterns = [
     path('accept-terms/',    AcceptTermsView.as_view(),    name='accept_terms'),
     path('change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('delete-account/',  DeleteAccountView.as_view(),  name='delete_account'),
+
+    # ── Location ──────────────────────────────────────────────────────────────
+    path('location/',         UpdateLocationView.as_view(),  name='update_location'),
+    path('location/detect/',  DetectLocationView.as_view(),  name='detect_location'),
 
     # ── Public ────────────────────────────────────────────────────────────────
     path('profile/<str:username>/', PublicProfileView.as_view(), name='public_profile'),

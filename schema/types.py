@@ -1,8 +1,8 @@
 """
-schema/types.py
+schema/types.py — PostGIS version
 
-Strawberry GraphQL type definitions that mirror your Django models.
-Each @strawberry_django.type maps directly to a model.
+avatar returns a plain URL string.
+latitude/longitude are @strawberry.field resolvers that read from the PointField.
 """
 
 import strawberry
@@ -35,7 +35,20 @@ class UserType:
     bio: auto
     is_verified: auto
     migration_status: auto
+    location_source: auto
     created_at: auto
+
+    @strawberry.field
+    def avatar(self) -> Optional[str]:
+        return self.avatar.url if self.avatar else None
+
+    @strawberry.field
+    def latitude(self) -> Optional[float]:
+        return self.location.y if self.location else None
+
+    @strawberry.field
+    def longitude(self) -> Optional[float]:
+        return self.location.x if self.location else None
 
 
 # ─── Memberships ──────────────────────────────────────────────────────────────
@@ -172,6 +185,14 @@ class ShopType:
     website: auto
     created_at: auto
 
+    @strawberry.field
+    def latitude(self) -> Optional[float]:
+        return self.location.y if self.location else None
+
+    @strawberry.field
+    def longitude(self) -> Optional[float]:
+        return self.location.x if self.location else None
+
 
 @strawberry_django.type(ShopListing)
 class ShopListingType:
@@ -225,7 +246,7 @@ class MigrationSpecialistType:
     total_reviews: auto
 
 
-# ─── Input Types (for mutations) ──────────────────────────────────────────────
+# ─── Input Types ──────────────────────────────────────────────────────────────
 
 @strawberry.input
 class CreatePostInput:
@@ -246,5 +267,11 @@ class CreateCommentInput:
 @strawberry.input
 class UpdateServiceStatusInput:
     service_request_id: str
-    status: str  # pending | accepted | in_progress | completed | cancelled
+    status: str
     notes: str = ''
+
+
+@strawberry.input
+class UpdateLocationInput:
+    latitude:  float
+    longitude: float

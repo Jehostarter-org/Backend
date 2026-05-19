@@ -2,12 +2,19 @@ from pathlib import Path
 from datetime import timedelta
 from decouple import config, Csv
 
+import os
+
+# Set the GDAL library path
+GDAL_LIBRARY_PATH = r'C:\GDAL\bin\gdal.dll'
+
+# Also add to system PATH so Django can find dependencies
+os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ─── Security ─────────────────────────────────────────────────────────────────
-# These values come from your .env file — never hardcoded here
-SECRET_KEY = config('SECRET_KEY')
-DEBUG       = config('DEBUG', cast=bool, default=False)
+SECRET_KEY    = config('SECRET_KEY')
+DEBUG         = config('DEBUG', cast=bool, default=False)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv(), default='localhost,127.0.0.1')
 
 INSTALLED_APPS = [
@@ -27,7 +34,7 @@ INSTALLED_APPS = [
     'drf_spectacular',
     'channels',
     'strawberry_django',
-    'whitenoise',          # ← serves static files in production without a CDN
+    'whitenoise',
 
     # ── Local Apps ────────────────────────────────────────────────────────────
     'users',
@@ -39,9 +46,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',         # must be first
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',   # ← right after SecurityMiddleware
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -50,7 +57,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'backend.urls'
+ROOT_URLCONF     = 'backend.urls'
 ASGI_APPLICATION = 'backend.asgi.application'
 
 TEMPLATES = [
@@ -80,7 +87,7 @@ DATABASES = {
     }
 }
 
-# ─── Redis Channel Layer ──────────────────────────────────────────────────────
+# ─── Redis / Channel Layer ────────────────────────────────────────────────────
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
@@ -108,25 +115,67 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator'},
 ]
 
-# ─── Static & Media Files ─────────────────────────────────────────────────────
-STATIC_URL   = '/static/'
-STATIC_ROOT  = BASE_DIR / 'staticfiles'   # where collectstatic dumps files
+# ─── Static & Media ───────────────────────────────────────────────────────────
+STATIC_URL          = '/static/'
+STATIC_ROOT         = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 MEDIA_URL  = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# ─── CORS ─────────────────────────────────────────────────────────────────────
-# In development (.env has DEBUG=True) we allow all origins.
-# In production (.env has DEBUG=False) only the frontend domain is allowed.
+# ─── CORS & CSRF ──────────────────────────────────────────────────────────────
+# CORS controls which origins browsers allow to make cross-origin requests.
+# CSRF_TRUSTED_ORIGINS controls which origins Django accepts POST/PUT/PATCH
+# requests from (including GraphQL mutations and REST writes).
+# Both must include localhost:3000 for local Next.js development.
+
+# Always load CSRF_TRUSTED_ORIGINS from .env first, then add development defaults
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')
+
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
+
+    # Development origins that must be trusted
+    development_origins = [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:8000',
+        'http://127.0.0.1:8000',
+    ]
+    
+    # Add development origins to CSRF trusted origins (avoid duplicates)
+    for origin in development_origins:
+        if origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(origin)
+
+    # Allow all headers and methods for development
+    CORS_ALLOW_HEADERS = [
+        'accept',
+        'accept-encoding',
+        'authorization',
+        'content-type',
+        'dnt',
+        'origin',
+        'user-agent',
+        'x-csrftoken',
+        'x-requested-with',
+    ]
+    CORS_ALLOW_METHODS = [
+        'DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT',
+    ]
+    # Allow cookies/auth headers in cross-origin requests
+    CORS_ALLOW_CREDENTIALS = True
+
 else:
-    CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='')
+    CORS_ALLOWED_ORIGINS  = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='')
+    # In production, use only what's in .env
+    if not CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS = []
+    CORS_ALLOW_CREDENTIALS = True
 
 # ─── HTTPS / Security Headers (production only) ───────────────────────────────
 if not DEBUG:
-    SECURE_HSTS_SECONDS            = 31536000   # 1 year
+    SECURE_HSTS_SECONDS            = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD            = True
     SECURE_SSL_REDIRECT            = True
@@ -174,6 +223,13 @@ SPECTACULAR_SETTINGS = {
     'TITLE':       'Jehostarter API',
     'DESCRIPTION': 'Migrant support platform API',
     'VERSION':     '1.0.0',
+}
+
+# ─── Strawberry GraphQL ───────────────────────────────────────────────────────
+# Strawberry handles its own auth — CSRF exemption is needed because
+# GraphQL clients send JSON (not form data) and manage auth via Bearer token.
+STRAWBERRY_DJANGO = {
+    'CSRF_EXEMPT': True,   # exempt /graphql/ from Django's CSRF middleware
 }
 
 # ─── Platform Config ──────────────────────────────────────────────────────────

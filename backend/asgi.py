@@ -1,7 +1,3 @@
-"""
-backend/asgi.py
-"""
-
 import os
 import django
 from django.core.asgi import get_asgi_application
@@ -12,12 +8,18 @@ from django.urls import re_path
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'backend.settings')
 django.setup()
 
-from strawberry.channels import GraphQLWSConsumer   # ← capital WS, capital C
+print("ASGI loading routes...")
+
+from strawberry.channels import GraphQLWSConsumer
 from schema.schema import schema
+from notifications.consumers import NotificationConsumer
 
 websocket_urlpatterns = [
-    re_path(r'ws/graphql/$', GraphQLWSConsumer.as_asgi(schema=schema)),
+    re_path(r'.*graphql.*', GraphQLWSConsumer.as_asgi(schema=schema)),
+    re_path(r'.*notifications.*', NotificationConsumer.as_asgi()),
 ]
+
+print("Routes registered:", websocket_urlpatterns)
 
 application = ProtocolTypeRouter({
     'http': get_asgi_application(),

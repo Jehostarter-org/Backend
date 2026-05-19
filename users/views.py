@@ -3,8 +3,12 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.views import TokenObtainPairView
+from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.utils import timezone
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
+from decouple import config
 
 from .serializers import (
     RegisterSerializer,
@@ -17,30 +21,17 @@ User = get_user_model()
 
 
 class RegisterView(generics.CreateAPIView):
-    """
-    POST /api/users/register/
-    Open to anyone. Creates a new user account.
-    """
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
 
 
 class LoginView(TokenObtainPairView):
-    """
-    POST /api/users/login/
-    Accepts email OR username + password.
-    Returns { access, refresh } JWT tokens.
-    """
     serializer_class = EmailTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
 
 
 class MeView(generics.RetrieveUpdateAPIView):
-    """
-    GET   /api/users/me/  — returns full profile of logged-in user
-    PATCH /api/users/me/  — partial update
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
@@ -53,15 +44,11 @@ class MeView(generics.RetrieveUpdateAPIView):
 
 
 class AvatarUploadView(APIView):
-    """
-    POST /api/users/avatar/
-    File upload stays in DRF — easier than GraphQL for multipart.
-    """
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
 
     def post(self, request):
-        user = request.user
+        user   = request.user
         avatar = request.FILES.get('avatar')
 
         if not avatar:
@@ -83,10 +70,6 @@ class AvatarUploadView(APIView):
 
 
 class AcceptTermsView(APIView):
-    """
-    POST /api/users/accept-terms/
-    Records terms acceptance. Called during onboarding.
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -109,10 +92,6 @@ class AcceptTermsView(APIView):
 
 
 class ChangePasswordView(APIView):
-    """
-    POST /api/users/change-password/
-    Requires current password before setting a new one.
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -155,10 +134,6 @@ class ChangePasswordView(APIView):
 
 
 class DeleteAccountView(APIView):
-    """
-    POST /api/users/delete-account/
-    Soft deletes — deactivates rather than hard deletes.
-    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -187,43 +162,13 @@ class DeleteAccountView(APIView):
 
 
 class PublicProfileView(generics.RetrieveAPIView):
-    """
-    GET /api/users/profile/<username>/
-    Public — no auth required.
-    """
-    queryset         = User.objects.filter(is_active=True)
-    serializer_class = UserProfileSerializer
+    queryset           = User.objects.filter(is_active=True)
+    serializer_class   = UserProfileSerializer
     permission_classes = [permissions.AllowAny]
-    lookup_field     = 'username'
-
-
-
-"""
-Add this to your users/views.py
-
-Also add to requirements.txt:
-  google-auth
-  google-auth-oauthlib
-
-And add to your .env:
-  GOOGLE_CLIENT_ID=282926972818-cgcmau1p3f7o20giscv70f6mvle09n5f.apps.googleusercontent.com
-  GOOGLE_CLIENT_SECRET=your-regenerated-secret-here
-"""
-
-from google.oauth2 import id_token
-from google.auth.transport import requests as google_requests
-from rest_framework_simplejwt.tokens import RefreshToken
-from decouple import config
+    lookup_field       = 'username'
 
 
 class GoogleAuthView(APIView):
-    """
-    POST /api/users/auth/google/
-
-    Receives the Google ID token from the frontend.
-    Verifies it with Google, creates or retrieves the user,
-    and returns Django JWT tokens.
-    """
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
@@ -236,7 +181,6 @@ class GoogleAuthView(APIView):
             )
 
         try:
-            # Verify the token with Google
             google_client_id = config('GOOGLE_CLIENT_ID')
             id_info = id_token.verify_oauth2_token(
                 credential,
@@ -252,7 +196,6 @@ class GoogleAuthView(APIView):
         email      = id_info.get('email')
         first_name = id_info.get('given_name', '')
         last_name  = id_info.get('family_name', '')
-        picture    = id_info.get('picture', '')
 
         if not email:
             return Response(
@@ -260,30 +203,50 @@ class GoogleAuthView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Get or create the user
-        user, created = User.objects.get_or_create(
-            email=email,
-            defaults={
-                'username':   email.split('@')[0],
-                'first_name': first_name,
-                'last_name':  last_name,
-                'is_verified': True,  # Google accounts are pre-verified
-            }
-        )
+        # Safe lookup — handles duplicate accounts from earlier testing
+        try:
+            user = User.objects.get(email=email)
+            created = False
+        except User.MultipleObjectsReturned:
+            # Keep the most recently created account, delete the rest
+            users = User.objects.filter(email=email).order_by('-created_at')
+            user = users.first()
+            users.exclude(id=user.id).delete()
+            created = False
+        except User.DoesNotExist:
+            # Generate a unique username if the email prefix is already taken
+            base_username = email.split('@')[0]
+            username = base_username
+            counter = 1
+            while User.objects.filter(username=username).exists():
+                username = f'{base_username}{counter}'
+                counter += 1
 
-        # Update name/picture if user already exists
+            user = User.objects.create(
+                email=email,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                is_verified=True,
+            )
+            created = True
+
+        # Update name if missing
         if not created:
-            if not user.first_name:
+            updated = False
+            if not user.first_name and first_name:
                 user.first_name = first_name
-            if not user.last_name:
+                updated = True
+            if not user.last_name and last_name:
                 user.last_name = last_name
-            user.save(update_fields=['first_name', 'last_name'])
+                updated = True
+            if updated:
+                user.save(update_fields=['first_name', 'last_name'])
 
-        # Generate Django JWT tokens for this user
         refresh = RefreshToken.for_user(user)
 
         return Response({
             'access':  str(refresh.access_token),
             'refresh': str(refresh),
-            'created': created,  # True if new user, False if existing
+            'created': created,
         }, status=status.HTTP_200_OK)
