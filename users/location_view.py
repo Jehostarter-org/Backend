@@ -1,135 +1,88 @@
-"""
-users/location_view.py
-
-Two endpoints:
-  POST /api/users/location/         — save GPS coordinates (user granted permission)
-  POST /api/users/location/detect/  — detect location from IP + timezone (GPS denied)
-"""
-
-from rest_framework import serializers
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from channels.layers import get_channel_layer
-from asgiref.sync import async_to_sync
+from rest_framework.permissions import IsAuthenticated
 from django.contrib.gis.geos import Point
-
-from utils.location_detect import resolve_location, get_client_ip
-
-
-# ─── Serializers ──────────────────────────────────────────────────────────────
-
-class GPSLocationSerializer(serializers.Serializer):
-    latitude  = serializers.FloatField(min_value=-90,  max_value=90)
-    longitude = serializers.FloatField(min_value=-180, max_value=180)
+import requests
 
 
-class DetectLocationSerializer(serializers.Serializer):
-    # Frontend sends the browser's timezone string
-    # e.g. Intl.DateTimeFormat().resolvedOptions().timeZone → "Africa/Lagos"
-    timezone = serializers.CharField(max_length=100, required=False, default='')
+def get_ip(request):
+    x_forwarded = request.META.get('HTTP_X_FORWARDED_FOR')
+    if x_forwarded:
+        return x_forwarded.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR')
 
-
-# ─── Helpers ──────────────────────────────────────────────────────────────────
-
-def _save_location_and_notify(user, latitude, longitude, source, city='', country=''):
-    """Saves PostGIS Point to user, fires WebSocket event."""
-    user.location        = Point(longitude, latitude, srid=4326)  # Point(x=lon, y=lat)
-    user.location_source = source
-    if city and not user.city:
-        user.city = city
-    if country and not user.current_country:
-        user.current_country = country
-
-    update_fields = ['location', 'location_source']
-    if city and not user.city:
-        update_fields.append('city')
-    if country and not user.current_country:
-        update_fields.append('current_country')
-
-    user.save(update_fields=update_fields)
-
-    # Notify frontend via WebSocket → triggers shop feed refresh
-    channel_layer = get_channel_layer()
-    async_to_sync(channel_layer.group_send)(
-        f'user_{user.id}',
-        {
-            'type':      'location.updated',
-            'latitude':  str(latitude),
-            'longitude': str(longitude),
-            'source':    source,
-        }
-    )
-
-
-# ─── Views ────────────────────────────────────────────────────────────────────
 
 class UpdateLocationView(APIView):
-    """
-    POST /api/users/location/
-    Body: { "latitude": 6.5244, "longitude": 3.3792 }
-
-    Called when user grants GPS permission in the browser/app.
-    Most accurate source — saved with source='gps'.
-    """
+    """POST /api/users/location/ -- save GPS coordinates from frontend."""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        serializer = GPSLocationSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        lat    = request.data.get('latitude')
+        lng    = request.data.get('longitude')
+        source = request.data.get('source', 'gps')
 
-        lat = serializer.validated_data['latitude']
-        lon = serializer.validated_data['longitude']
+        if lat is None or lng is None:
+            return Response({'error': 'latitude and longitude required'}, status=400)
 
-        _save_location_and_notify(request.user, lat, lon, source='gps')
-
-        return Response({
-            'detail':    'Location updated via GPS.',
-            'latitude':  lat,
-            'longitude': lon,
-            'source':    'gps',
-        })
+        try:
+            request.user.location        = Point(float(lng), float(lat), srid=4326)
+            request.user.location_source = source
+            request.user.save(update_fields=['location', 'location_source'])
+            return Response({
+                'status': 'location updated',
+                'lat':    float(lat),
+                'lng':    float(lng),
+                'source': source,
+            })
+        except Exception as e:
+            return Response({'error': str(e)}, status=400)
 
 
 class DetectLocationView(APIView):
-    """
-    POST /api/users/location/detect/
-    Body: { "timezone": "Africa/Lagos" }   ← from Intl.DateTimeFormat().resolvedOptions().timeZone
-
-    Called when user DENIES GPS permission.
-    Tries IP geolocation first, falls back to timezone signal.
-    """
+    """GET /api/users/location/detect/ -- detect location from IP address."""
     permission_classes = [IsAuthenticated]
 
-    def post(self, request):
-        serializer = DetectLocationSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+    def get(self, request):
+        ip = get_ip(request)
 
-        ip       = get_client_ip(request)
-        timezone = serializer.validated_data.get('timezone', '')
+        # Localhost fallback for development
+        if ip in ('127.0.0.1', '::1', 'localhost'):
+            ip = None
 
-        result = resolve_location(ip, timezone)
+        try:
+            if ip:
+                res = requests.get(
+                    f'http://ip-api.com/json/{ip}?fields=status,lat,lon,city,countryCode',
+                    timeout=5
+                )
+            else:
+                res = requests.get(
+                    'http://ip-api.com/json/?fields=status,lat,lon,city,countryCode',
+                    timeout=5
+                )
 
-        if not result:
-            return Response(
-                {'detail': 'Could not determine location automatically. Please enter your city manually.'},
-                status=400
-            )
+            data = res.json()
 
-        _save_location_and_notify(
-            request.user,
-            result['latitude'],
-            result['longitude'],
-            source  = result['source'],
-            city    = result.get('city', ''),
-            country = result.get('country', ''),
-        )
+            if data.get('status') == 'success':
+                lat          = data['lat']
+                lng          = data['lon']
+                city         = data.get('city', '')
+                country_code = data.get('countryCode', '')
 
-        return Response({
-            'detail':    f"Location detected via {result['source']}.",
-            'latitude':  result['latitude'],
-            'longitude': result['longitude'],
-            'city':      result.get('city', ''),
-            'country':   result.get('country', ''),
-            'source':    result['source'],
-        })
+                request.user.location        = Point(float(lng), float(lat), srid=4326)
+                request.user.location_source = 'ip'
+                request.user.save(update_fields=['location', 'location_source'])
+
+                return Response({
+                    'status':       'ok',
+                    'lat':          lat,
+                    'lng':          lng,
+                    'city':         city,
+                    'country_code': country_code,
+                    'source':       'ip',
+                })
+
+        except Exception:
+            pass
+
+        return Response({'status': 'failed', 'error': 'Could not detect location'}, status=200)

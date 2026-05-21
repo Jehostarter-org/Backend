@@ -48,7 +48,6 @@ class ShopCreateView(generics.CreateAPIView):
     def perform_create(self, serializer):
         user     = self.request.user
         currency = settings.COUNTRY_CURRENCY_MAP.get(user.current_country, 'USD')
-        # Inherit user's current PostGIS point as the shop's location
         serializer.save(
             owner        = user,
             country_code = user.current_country,
@@ -64,7 +63,8 @@ class ShopDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class MyShopView(generics.RetrieveAPIView):
-    serializer_class = ShopSerializer
+    serializer_class   = ShopSerializer
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
         if not hasattr(self.request.user, 'shop'):
@@ -78,9 +78,6 @@ class NearbyShopsView(generics.ListAPIView):
     Optional params:
       ?lat=6.52&lon=3.37   — explicit coords (map browsing)
       ?radius=20           — custom radius in km (default 50)
-
-    Uses PostGIS ST_DWithin — single DB query, indexed, very fast.
-    Falls back to country_code filter if no location available.
     """
     serializer_class   = ShopSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -89,7 +86,6 @@ class NearbyShopsView(generics.ListAPIView):
         user      = request.user
         radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
 
-        # Explicit coords override stored location (e.g. browsing a different city)
         lat = request.query_params.get('lat')
         lon = request.query_params.get('lon')
 
@@ -107,7 +103,6 @@ class NearbyShopsView(generics.ListAPIView):
                 distance=Distance('location', point)
             ).order_by('distance')
         else:
-            # Fallback: country filter
             countries = [c for c in [user.current_country, user.destination_country] if c]
             qs = base_qs.filter(country_code__in=countries) if countries else base_qs
 
@@ -119,6 +114,14 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/shops/listings/  — proximity-aware listing browse
     POST /api/shops/listings/  — create listing (auth required)
+
+    Query params:
+      ?category=vehicles     — filter by category slug
+      ?country=NG            — explicit country override
+      ?search=ford           — full-text search on title/description
+      ?ordering=price        — sort by price or created_at
+      ?lat=6.52&lon=3.37     — explicit coords
+      ?radius=20             — search radius in km (default 50)
     """
     serializer_class = ShopListingSerializer
     filter_backends  = [filters.SearchFilter, filters.OrderingFilter]
@@ -136,12 +139,18 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
         qs        = ShopListing.objects.filter(is_available=True, is_deleted=False)
         radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
 
-        # Explicit country override
+        # ── Category filter ───────────────────────────────────────────────────
+        # ?category=vehicles filters by Category.slug
+        category = request.query_params.get('category')
+        if category:
+            qs = qs.filter(category__slug=category)
+
+        # ── Explicit country override ─────────────────────────────────────────
         country = request.query_params.get('country')
         if country:
             return qs.filter(shop__country_code=country)
 
-        # Explicit coords override
+        # ── Explicit coords override ──────────────────────────────────────────
         lat = request.query_params.get('lat')
         lon = request.query_params.get('lon')
         if lat and lon:
@@ -149,7 +158,7 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
             shop_ids = _nearby_shop_ids(point, radius_km)
             return qs.filter(shop__id__in=shop_ids)
 
-        # Stored user location
+        # ── Stored user location ──────────────────────────────────────────────
         if user:
             point = _point_from_user(user)
             if point:
@@ -207,5 +216,4 @@ class BoostedListingsView(generics.ListAPIView):
             shop_ids = _nearby_shop_ids(point)
             return qs.filter(shop__id__in=shop_ids)
 
-        # Fallback
         return qs.filter(shop__country_code=user.current_country)

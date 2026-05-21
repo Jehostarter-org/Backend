@@ -9,6 +9,11 @@ from django.utils import timezone
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from decouple import config
+from django.contrib.gis.geos import Point
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+
 
 from .serializers import (
     RegisterSerializer,
@@ -250,3 +255,21 @@ class GoogleAuthView(APIView):
             'refresh': str(refresh),
             'created': created,
         }, status=status.HTTP_200_OK)
+    
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def update_location(request):
+    lat = request.data.get('latitude')
+    lng = request.data.get('longitude')
+    source = request.data.get('source', 'gps')
+
+    if lat is None or lng is None:
+        return Response({'error': 'latitude and longitude required'}, status=400)
+
+    try:
+        request.user.location = Point(float(lng), float(lat), srid=4326)
+        request.user.location_source = source
+        request.user.save(update_fields=['location', 'location_source'])
+        return Response({'status': 'location updated'})
+    except Exception as e:
+        return Response({'error': str(e)}, status=400)

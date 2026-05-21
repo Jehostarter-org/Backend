@@ -168,7 +168,6 @@ class UserUpdateSerializer(serializers.ModelSerializer):
             'current_country', 'destination_country',
             'city', 'state_province', 'migration_status',
         ]
-        # avatar is handled separately by AvatarUploadView (multipart POST)
 
     def _validate_country(self, value):
         if not value:
