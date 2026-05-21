@@ -78,12 +78,12 @@ TEMPLATES = [
 # ─── Database ─────────────────────────────────────────────────────────────────
 DATABASES = {
     'default': {
-        'ENGINE':   'django.db.backends.postgresql',
-        'NAME':     config('DB_NAME'),
-        'USER':     config('DB_USER'),
-        'PASSWORD': config('DB_PASSWORD'),
-        'HOST':     config('DB_HOST', default='localhost'),
-        'PORT':     config('DB_PORT', default='5432'),
+        'ENGINE': 'django.contrib.gis.db.backends.postgis',
+        'NAME': 'jehostarter',
+        'USER': 'postgres',
+        'PASSWORD': 'Benjamin*247',
+        'HOST': 'localhost',
+        'PORT': '5432',
     }
 }
 
