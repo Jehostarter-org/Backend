@@ -1,13 +1,12 @@
- 
 from rest_framework import generics, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils.text import slugify
 import uuid
-from .models import Community, CommunityMember, Post, Comment, PostLike, PostReport
+from .models import Community, CommunityMember, Post, Comment, PostLike, PostReport, Message
 from .serializers import (
     CommunitySerializer, CommunityMemberSerializer,
-    PostSerializer, CommentSerializer, PostReportSerializer,
+    PostSerializer, CommentSerializer, PostReportSerializer, MessageSerializer,
 )
 
 
@@ -119,6 +118,36 @@ class MyCommunityFeedView(generics.ListAPIView):
     serializer_class = PostSerializer
 
     def get_queryset(self):
-        user     = self.request.user
-        joined   = CommunityMember.objects.filter(user=user).values_list('community_id', flat=True)
+        user   = self.request.user
+        joined = CommunityMember.objects.filter(user=user).values_list('community_id', flat=True)
         return Post.objects.filter(community_id__in=joined, is_approved=True, is_deleted=False)
+
+
+class CommunityMessageHistoryView(generics.ListAPIView):
+    """
+    GET /api/community/<pk>/messages/
+    Returns the last 50 messages for a community, oldest-first.
+    Only accessible to community members.
+    """
+    serializer_class   = MessageSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        community_id = self.kwargs['pk']
+
+        is_member = CommunityMember.objects.filter(
+            community_id=community_id,
+            user=self.request.user,
+            is_banned=False,
+        ).exists()
+
+        if not is_member:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('You must be a member to view messages.')
+
+        return (
+            Message.objects
+            .filter(community_id=community_id, is_deleted=False)
+            .select_related('sender')
+            .order_by('-created_at')[:50]
+        )[::-1]

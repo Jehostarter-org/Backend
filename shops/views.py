@@ -68,8 +68,15 @@ class MyShopView(generics.RetrieveAPIView):
 
     def get_object(self):
         if not hasattr(self.request.user, 'shop'):
-            raise NotFound("You don't have a shop yet.")
+            return None
         return self.request.user.shop
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance is None:
+            return Response(None, status=200)  # no shop yet — not an error
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
 
 
 class NearbyShopsView(generics.ListAPIView):
@@ -140,7 +147,6 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
         radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
 
         # ── Category filter ───────────────────────────────────────────────────
-        # ?category=vehicles filters by Category.slug
         category = request.query_params.get('category')
         if category:
             qs = qs.filter(category__slug=category)

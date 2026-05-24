@@ -1,11 +1,11 @@
 from rest_framework import serializers
-from .models import Community, CommunityMember, Post, PostImage, Comment, PostLike, PostReport
+from .models import Community, CommunityMember, Post, PostImage, Comment, PostLike, PostReport, Message
 
 
 class CommunitySerializer(serializers.ModelSerializer):
-    member_count   = serializers.ReadOnlyField()
+    member_count     = serializers.ReadOnlyField()
     creator_username = serializers.ReadOnlyField(source='creator.username')
-    is_member      = serializers.SerializerMethodField()
+    is_member        = serializers.SerializerMethodField()
 
     class Meta:
         model  = Community
@@ -35,7 +35,7 @@ class CommunityMemberSerializer(serializers.ModelSerializer):
 class PostImageSerializer(serializers.ModelSerializer):
     class Meta:
         model  = PostImage
-        fields = ['id', 'image', 'caption', 'order']
+        fields = ['id', 'image','caption', 'order']
 
 
 class CommentSerializer(serializers.ModelSerializer):
@@ -81,4 +81,21 @@ class PostReportSerializer(serializers.ModelSerializer):
     class Meta:
         model  = PostReport
         fields = ['id', 'reason', 'detail', 'created_at']
-        read_only_fields = ['id', 'created_at']  
+        read_only_fields = ['id', 'created_at']
+
+
+class MessageSerializer(serializers.ModelSerializer):
+    sender_username = serializers.ReadOnlyField(source='sender.username')
+    sender_avatar   = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Message
+        fields = ['id', 'community', 'sender', 'sender_username', 'sender_avatar', 'content', 'created_at']
+        read_only_fields = ['id', 'sender', 'created_at']
+
+    def get_sender_avatar(self, obj):
+        request = self.context.get('request')
+        avatar = getattr(obj.sender, 'avatar', None) or getattr(obj.sender, 'profile_picture', None)
+        if avatar and request:
+            return request.build_absolute_uri(avatar.url)
+        return None

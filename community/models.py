@@ -240,3 +240,27 @@ class CommunityEvent(models.Model):
 
     def __str__(self):
         return f"{self.title} in {self.community}"
+
+
+
+class Message(models.Model):
+    """
+    Real-time chat message inside a community.
+    Sent/received via WebSocket (CommunityConsumer).
+    History is loaded via REST on mount: GET /community/<pk>/messages/
+    """
+    id        = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    community = models.ForeignKey(Community, on_delete=models.CASCADE, related_name='messages')
+    sender    = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_messages'
+    )
+    content    = models.TextField()
+    is_deleted = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'community_messages'
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Message by {self.sender} in {self.community}"

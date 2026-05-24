@@ -13,10 +13,12 @@ print("ASGI loading routes...")
 from strawberry.channels import GraphQLWSConsumer
 from schema.schema import schema
 from notifications.consumers import NotificationConsumer
+from community.routing import community_websocket_urlpatterns  # ← ADD THIS
 
 websocket_urlpatterns = [
     re_path(r'.*graphql.*', GraphQLWSConsumer.as_asgi(schema=schema)),
     re_path(r'.*notifications.*', NotificationConsumer.as_asgi()),
+    *community_websocket_urlpatterns,                          # ← ADD THIS
 ]
 
 print("Routes registered:", websocket_urlpatterns)
