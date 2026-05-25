@@ -10,6 +10,30 @@ from .serializers import (
 )
 
 
+class IsCommunityAdminOrReadOnly(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        return obj.members.filter(
+            user=request.user,
+            role__in=['admin', 'moderator'],
+            is_banned=False,
+        ).exists()
+
+
+class IsPostAuthorOrCommunityAdminOrReadOnly(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        if obj.author == request.user:
+            return True
+        return obj.community.members.filter(
+            user=request.user,
+            role__in=['admin', 'moderator'],
+            is_banned=False,
+        ).exists()
+
+
 class CommunityListCreateView(generics.ListCreateAPIView):
     serializer_class = CommunitySerializer
     filter_backends  = [filters.SearchFilter]
@@ -34,7 +58,7 @@ class CommunityListCreateView(generics.ListCreateAPIView):
 class CommunityDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset           = Community.objects.all()
     serializer_class   = CommunitySerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsCommunityAdminOrReadOnly]
 
 
 class JoinCommunityView(APIView):
@@ -81,7 +105,7 @@ class PostListCreateView(generics.ListCreateAPIView):
 class PostDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset           = Post.objects.all()
     serializer_class   = PostSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsPostAuthorOrCommunityAdminOrReadOnly]
 
 
 class LikePostView(APIView):

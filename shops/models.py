@@ -1,11 +1,11 @@
-import ulid
+from ulid import ULID
 from django.db import models
 from django.conf import settings
 from django.contrib.gis.db import models as gis_models
 
 
 def generate_ulid():
-    return str(ulid.new())
+    return str(ULID())
 
 
 class Category(models.Model):

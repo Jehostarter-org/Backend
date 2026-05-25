@@ -67,6 +67,21 @@ class ShopListingSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'shop', 'shop_id', 'is_boosted', 'created_at']
 
+    def create(self, validated_data):
+        request = self.context.get('request')
+        listing = super().create(validated_data)
+
+        if request:
+            for index, image in enumerate(request.FILES.getlist('images')):
+                ListingImage.objects.create(
+                    listing=listing,
+                    image=image,
+                    is_primary=index == 0,
+                    order=index,
+                )
+
+        return listing
+
 
 class ShopSerializer(serializers.ModelSerializer):
     listings_count = serializers.SerializerMethodField()
@@ -81,7 +96,7 @@ class ShopSerializer(serializers.ModelSerializer):
             'country_code', 'city', 'currency', 'logo', 'banner',
             'whatsapp', 'website', 'is_active', 'listings_count', 'created_at',
         ]
-        read_only_fields = ['id', 'owner', 'created_at']
+        read_only_fields = ['id', 'owner', 'country_code', 'currency', 'created_at']
 
     def get_listings_count(self, obj):
         return obj.listings.filter(is_available=True).count()
@@ -100,7 +115,9 @@ class ShopSerializer(serializers.ModelSerializer):
 
 
 class BoostRequestSerializer(serializers.ModelSerializer):
+    payment_reference = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model  = BoostRequest
         fields = ['id', 'listing', 'payment_reference', 'duration_days', 'created_at']
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'listing', 'created_at']

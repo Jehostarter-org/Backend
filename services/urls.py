@@ -17,11 +17,9 @@ from .views import (
 urlpatterns = [
     # ── Service Requests ──────────────────────────────────────────────────────
     path('', ServiceRequestListCreateView.as_view(), name='service_list_create'),
-    path('<str:pk>/', ServiceRequestDetailView.as_view(), name='service_detail'),
 
     # ── Provider Dashboard ────────────────────────────────────────────────────
     path('available/', AvailableServicesView.as_view(), name='available_services'),
-    path('<str:pk>/claim/', ClaimServiceView.as_view(), name='claim_service'),
     path('my-jobs/', MyProviderJobsView.as_view(), name='my_provider_jobs'),
     path('upcoming-pickups/', UpcomingPickupsView.as_view(), name='upcoming_pickups'),
 
@@ -38,4 +36,8 @@ urlpatterns = [
     # ── Migration Specialist ──────────────────────────────────────────────────
     path('specialist/apply/', MigrationSpecialistApplyView.as_view(), name='specialist_apply'),
     path('specialist/my-application/', MigrationSpecialistApplicationStatusView.as_view(), name='specialist_application_status'),
+
+    # Dynamic routes must come last so static dashboard routes are not treated as IDs.
+    path('<str:pk>/claim/', ClaimServiceView.as_view(), name='claim_service'),
+    path('<str:pk>/', ServiceRequestDetailView.as_view(), name='service_detail'),
 ]

@@ -28,17 +28,25 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             return
 
         self.group_name = f'user_{self.user.id}'
+        self.notifications_group_name = f'user_notifications_{self.user.id}'
         await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.channel_layer.group_add(self.notifications_group_name, self.channel_name)
         await self.accept()
 
         unread = await self._unread_count()
         print(f"[WS] Connected. Unread: {unread}")
-        await self.send(text_data=json.dumps({'type': 'connected', 'unread': unread}))
+        await self.send(text_data=json.dumps({
+            'type': 'connection_established',
+            'unread_count': unread,
+            'unread': unread,
+        }))
 
     async def disconnect(self, code):
         print(f"[WS] Disconnected. code={code}")
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
+        if hasattr(self, 'notifications_group_name'):
+            await self.channel_layer.group_discard(self.notifications_group_name, self.channel_name)
 
     async def receive(self, text_data):
         pass
@@ -52,6 +60,12 @@ class NotificationConsumer(AsyncWebsocketConsumer):
             'title':   event.get('title'),
             'message': event.get('message'),
             'link':    event.get('link'),
+        }))
+
+    async def new_notification(self, event):
+        await self.send(text_data=json.dumps({
+            'type': 'new_notification',
+            'payload': event.get('payload', {}),
         }))
 
     # ── Location updated event ────────────────────────────────────────────────

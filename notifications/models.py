@@ -1,10 +1,10 @@
-import ulid
+from ulid import ULID
 from django.db import models
 from django.conf import settings
 
 
 def generate_ulid():
-    return str(ulid.new())
+    return str(ULID())
 
 
 class Notification(models.Model):

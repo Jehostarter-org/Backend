@@ -144,7 +144,7 @@ class ClaimServiceView(APIView):
             )
 
         # Notify the requester
-        Notification.objects.create(
+        notification = Notification.objects.create(
             recipient=sr.requester,
             actor=user,
             notification_type='service_accepted',
@@ -158,9 +158,12 @@ class ClaimServiceView(APIView):
             group=f'user_notifications_{sr.requester.id}',
             event_type='new_notification',
             payload={
+                'notification_id': notification.id,
                 'type': 'service_accepted',
                 'title': f'Your {sr.get_service_type_display()} has been accepted',
+                'message': notification.message,
                 'service_id': sr.id,
+                'created_at': notification.created_at.isoformat(),
             }
         )
 

@@ -16,6 +16,20 @@ from .serializers import ShopSerializer, CategorySerializer, ShopListingSerializ
 DEFAULT_RADIUS_KM = 50
 
 
+class IsShopOwnerOrReadOnly(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        return obj.owner == request.user
+
+
+class IsListingOwnerOrReadOnly(permissions.BasePermission):
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        return obj.shop.owner == request.user
+
+
 def _point_from_user(user):
     """Returns the user's PostGIS Point or None."""
     return user.location if user.is_authenticated and user.location else None
@@ -59,7 +73,7 @@ class ShopCreateView(generics.CreateAPIView):
 class ShopDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset           = Shop.objects.all()
     serializer_class   = ShopSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsShopOwnerOrReadOnly]
 
 
 class MyShopView(generics.RetrieveAPIView):
@@ -185,7 +199,7 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
 class ShopListingDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset           = ShopListing.objects.all()
     serializer_class   = ShopListingSerializer
-    permission_classes = [permissions.IsAuthenticatedOrReadOnly]
+    permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsListingOwnerOrReadOnly]
 
 
 class BoostListingView(APIView):

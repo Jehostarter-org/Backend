@@ -62,7 +62,10 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             'airport_pickup_details', 'home_inspection_details',
             'chaperone_details', 'review',
         ]
-        read_only_fields = ['id', 'requester', 'status', 'currency', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'requester', 'provider', 'status', 'country_code', 'city',
+            'currency', 'created_at', 'updated_at',
+        ]
 
     def create(self, validated_data):
         airport_data    = validated_data.pop('airport_pickup_details', None)

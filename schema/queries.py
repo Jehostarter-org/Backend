@@ -159,38 +159,39 @@ class Query:
 
         @sync_to_async
         def fetch():
-            plan = user.membership_plan
-
             qs = ShopListing.objects.filter(
                 is_available=True,
                 is_deleted=False,
             ).select_related('shop', 'category')
 
             # Membership-based country visibility
-            if plan == 'gold':
-                if country_code:
-                    qs = qs.filter(shop__country_code=country_code)
+            if user.is_authenticated:
+                plan = user.membership_plan
+                if plan == 'gold':
+                    if country_code:
+                        qs = qs.filter(shop__country_code=country_code)
+                    else:
+                        qs = qs.filter(shop__country_code=user.current_country)
                 else:
-                    qs = qs.filter(shop__country_code=user.current_country)
-            else:
-                allowed = [user.current_country]
-                if (user.destination_country
-                        and user.destination_country != user.current_country):
-                    allowed.append(user.destination_country)
-                qs = qs.filter(shop__country_code__in=allowed)
+                    allowed = [user.current_country]
+                    if (user.destination_country
+                            and user.destination_country != user.current_country):
+                        allowed.append(user.destination_country)
+                    qs = qs.filter(shop__country_code__in=[c for c in allowed if c])
+            elif country_code:
+                qs = qs.filter(shop__country_code=country_code)
 
             # Proximity filter
             browsing_current = (
-                not country_code or country_code == user.current_country
+                not user.is_authenticated
+                or not country_code
+                or country_code == user.current_country
             )
             if user_lat and user_lng and browsing_current:
                 qs_with_coords = (
-                    qs.exclude(shop__latitude=None)
-                      .exclude(shop__longitude=None)
+                    qs.filter(shop__location__isnull=False)
                 )
-                qs_no_coords = qs.filter(
-                    Q(shop__latitude=None) | Q(shop__longitude=None)
-                )
+                qs_no_coords = qs.filter(shop__location__isnull=True)
                 nearby_ids = [
                     listing.id
                     for listing in qs_with_coords
