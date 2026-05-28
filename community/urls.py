@@ -4,13 +4,18 @@ from .views import (
     JoinCommunityView, LeaveCommunityView, CommunityMembersView,
     PostListCreateView, PostDetailView, LikePostView,
     CommentListCreateView, ReportPostView, MyCommunityFeedView,
-    CommunityMessageHistoryView,
+    CommunityMessageHistoryView, DeleteMessageView,
 )
 
 urlpatterns = [
     path('',                         CommunityListCreateView.as_view(),     name='communities'),
     path('feed/',                    MyCommunityFeedView.as_view(),         name='community_feed'),
     path('<str:pk>/messages/',       CommunityMessageHistoryView.as_view(), name='community_messages'),
+
+    # DELETE /community/<community_pk>/messages/<message_pk>/delete/
+    path('<str:community_pk>/messages/<str:message_pk>/delete/',
+         DeleteMessageView.as_view(), name='delete_community_message'),
+
     path('<str:pk>/',                CommunityDetailView.as_view(),         name='community_detail'),
     path('<str:pk>/join/',           JoinCommunityView.as_view(),           name='join_community'),
     path('<str:pk>/leave/',          LeaveCommunityView.as_view(),          name='leave_community'),

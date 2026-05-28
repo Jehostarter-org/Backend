@@ -242,7 +242,6 @@ class CommunityEvent(models.Model):
         return f"{self.title} in {self.community}"
 
 
-
 class Message(models.Model):
     """
     Real-time chat message inside a community.
@@ -254,9 +253,20 @@ class Message(models.Model):
     sender    = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_messages'
     )
-    content    = models.TextField()
-    is_deleted = models.BooleanField(default=False)
-    created_at = models.DateTimeField(auto_now_add=True)
+    content         = models.TextField()
+    # Self-referential FK — null for top-level messages, set for replies
+    reply_to        = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='replies',
+    )
+    attachment      = models.FileField(upload_to='community_attachments/', null=True, blank=True)
+    attachment_name = models.CharField(max_length=255, blank=True)
+    attachment_type = models.CharField(max_length=100, blank=True)
+    attachment_size = models.PositiveIntegerField(default=0)
+    is_deleted      = models.BooleanField(default=False)
+    created_at      = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'community_messages'

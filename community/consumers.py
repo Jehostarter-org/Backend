@@ -1,17 +1,18 @@
 """
 community/consumers.py
 
-WebSocket consumer for real-time community group chat.
+Supported client → server message types
+----------------------------------------
+  { "type": "message",  "content": "...", "reply_to_id": "<id>|null" }
+  { "type": "typing" }
+  { "type": "delete_message", "message_id": "<id>" }
 
-Connection URL (set in routing.py):
-    ws://<host>/ws/community/<community_id>/?token=<jwt>
-
-Flow:
-    1. Client connects with JWT token in query string
-    2. Consumer validates token → resolves user → checks membership
-    3. User joins the channel group for that community
-    4. Any message sent by one member is broadcast to all members in real time
-    5. Message is saved to the database so history persists
+Supported server → client message types
+----------------------------------------
+  { "type": "message",         ..., "reply_to": { id, sender_username, content } | null }
+  { "type": "typing",          ... }
+  { "type": "user_joined",     ... }
+  { "type": "message_deleted", "message_id": "<id>", "deleted_by": "<user_id>" }
 """
 
 import json
@@ -32,7 +33,6 @@ class CommunityConsumer(AsyncWebsocketConsumer):
         self.community_id = self.scope['url_route']['kwargs']['community_id']
         self.group_name   = f'community_{self.community_id}'
 
-        # Auth
         token_str = self._get_token()
         if not token_str:
             await self.close(code=4001)
@@ -43,19 +43,15 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             await self.close(code=4001)
             return
 
-        # Membership check
-        is_member = await self._is_member()
-        if not is_member:
+        if not await self._is_member():
             await self.close(code=4003)
             return
 
-        # Join channel group
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
         print(f'[WS Community] {self.user.username} connected to {self.community_id}')
 
-        # Notify the room that this user joined
         await self.channel_layer.group_send(self.group_name, {
             'type':     'user_joined',
             'username': self.user.username,
@@ -78,36 +74,62 @@ class CommunityConsumer(AsyncWebsocketConsumer):
         msg_type = data.get('type', 'message')
 
         if msg_type == 'message':
-            content = (data.get('content') or '').strip()
+            content      = (data.get('content') or '').strip()
+            reply_to_id  = (data.get('reply_to_id') or '').strip() or None
             if not content:
                 return
 
-            # Save to DB
-            message = await self._save_message(content)
+            message, reply_to_preview = await self._save_message(content, reply_to_id)
 
-            # Broadcast to all members in the community channel group
             await self.channel_layer.group_send(self.group_name, {
-                'type':           'chat_message',
-                'id':             str(message.id),
-                'content':        message.content,
-                'sender_id':      str(self.user.id),
+                'type':            'chat_message',
+                'id':              str(message.id),
+                'content':         message.content,
+                'sender_id':       str(self.user.id),
                 'sender_username': self.user.username,
-                'sender_avatar':  await self._get_avatar(),
-                'created_at':     message.created_at.isoformat(),
+                'sender_avatar':   await self._get_avatar(),
+                'reply_to':        reply_to_preview,   # None or { id, sender_username, content }
+                'attachment_url':  None,
+                'attachment_name': '',
+                'attachment_type': '',
+                'attachment_size': 0,
+                'created_at':      message.created_at.isoformat(),
             })
 
         elif msg_type == 'typing':
-            # Broadcast typing indicator (not saved)
             await self.channel_layer.group_send(self.group_name, {
                 'type':     'typing_indicator',
                 'username': self.user.username,
                 'user_id':  str(self.user.id),
             })
 
+        elif msg_type == 'delete_message':
+            message_id = (data.get('message_id') or '').strip()
+            if not message_id:
+                return
+
+            result = await self._delete_message(message_id)
+
+            if result == 'ok':
+                await self.channel_layer.group_send(self.group_name, {
+                    'type':       'message_deleted_event',
+                    'message_id': message_id,
+                    'deleted_by': str(self.user.id),
+                })
+            elif result == 'forbidden':
+                await self.send(text_data=json.dumps({
+                    'type':   'error',
+                    'detail': 'You cannot delete that message.',
+                }))
+            else:
+                await self.send(text_data=json.dumps({
+                    'type':   'error',
+                    'detail': 'Message not found.',
+                }))
+
     # ── Channel layer event handlers ──────────────────────────────────────────
 
     async def chat_message(self, event):
-        """Broadcast a new chat message to this WebSocket client."""
         await self.send(text_data=json.dumps({
             'type':            'message',
             'id':              event['id'],
@@ -115,11 +137,15 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             'sender_id':       event['sender_id'],
             'sender_username': event['sender_username'],
             'sender_avatar':   event['sender_avatar'],
+            'reply_to':        event.get('reply_to'),   # forwarded as-is
+            'attachment_url':  event.get('attachment_url'),
+            'attachment_name': event.get('attachment_name', ''),
+            'attachment_type': event.get('attachment_type', ''),
+            'attachment_size': event.get('attachment_size', 0),
             'created_at':      event['created_at'],
         }))
 
     async def typing_indicator(self, event):
-        """Forward typing indicator — skip if it's from this user."""
         if event['user_id'] != str(self.user.id):
             await self.send(text_data=json.dumps({
                 'type':     'typing',
@@ -127,11 +153,17 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             }))
 
     async def user_joined(self, event):
-        """Notify all clients when a new member connects."""
         await self.send(text_data=json.dumps({
             'type':     'user_joined',
             'username': event['username'],
             'user_id':  event['user_id'],
+        }))
+
+    async def message_deleted_event(self, event):
+        await self.send(text_data=json.dumps({
+            'type':       'message_deleted',
+            'message_id': event['message_id'],
+            'deleted_by': event['deleted_by'],
         }))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -162,12 +194,63 @@ class CommunityConsumer(AsyncWebsocketConsumer):
         ).exists()
 
     @database_sync_to_async
-    def _save_message(self, content):
-        return Message.objects.create(
+    def _save_message(self, content, reply_to_id=None):
+        """
+        Save a message. If reply_to_id is provided and valid, attach it.
+        Returns (message, reply_to_preview_dict | None).
+        """
+        reply_to_obj     = None
+        reply_to_preview = None
+
+        if reply_to_id:
+            try:
+                reply_to_obj = Message.objects.select_related('sender').get(
+                    pk=reply_to_id,
+                    community_id=self.community_id,
+                    is_deleted=False,
+                )
+                reply_to_preview = {
+                    'id':              str(reply_to_obj.id),
+                    'sender_username': reply_to_obj.sender.username,
+                    # Truncate long previews to 80 chars
+                    'content':         (reply_to_obj.content or '')[:80],
+                }
+            except Message.DoesNotExist:
+                pass  # Invalid reply_to — treat as a normal message
+
+        message = Message.objects.create(
             community_id=self.community_id,
             sender=self.user,
             content=content,
+            reply_to=reply_to_obj,
         )
+        return message, reply_to_preview
+
+    @database_sync_to_async
+    def _delete_message(self, message_id):
+        try:
+            message = Message.objects.get(
+                pk=message_id,
+                community_id=self.community_id,
+                is_deleted=False,
+            )
+        except Message.DoesNotExist:
+            return 'not_found'
+
+        is_own   = str(message.sender_id) == str(self.user.id)
+        is_admin = CommunityMember.objects.filter(
+            community_id=self.community_id,
+            user=self.user,
+            role__in=['admin', 'moderator'],
+            is_banned=False,
+        ).exists()
+
+        if not (is_own or is_admin):
+            return 'forbidden'
+
+        message.is_deleted = True
+        message.save(update_fields=['is_deleted'])
+        return 'ok'
 
     @database_sync_to_async
     def _get_avatar(self):
