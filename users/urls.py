@@ -5,12 +5,16 @@ from .views import (
     RegisterView, LoginView, MeView, AvatarUploadView,
     AcceptTermsView, ChangePasswordView, DeleteAccountView,
     PublicProfileView, GoogleAuthView,
+    AdminRegisterView, AdminLoginView, AdminMeView,
 )
 from .location_view import UpdateLocationView, DetectLocationView
 
 urlpatterns = [
     path('register/',       RegisterView.as_view(),      name='register'),
     path('login/',          LoginView.as_view(),          name='login'),
+    path('admin/register/', AdminRegisterView.as_view(),  name='admin_register'),
+    path('admin/login/',    AdminLoginView.as_view(),     name='admin_login'),
+    path('admin/me/',       AdminMeView.as_view(),        name='admin_me'),
     path('token/refresh/',  TokenRefreshView.as_view(),   name='token_refresh'),
     path('auth/google/',    GoogleAuthView.as_view(),     name='google_auth'),
 

@@ -1,6 +1,7 @@
 from ulid import ULID
 from django.db import models
 from django.conf import settings
+from django.utils import timezone
 from django.contrib.gis.db import models as gis_models
 
 
@@ -153,11 +154,133 @@ class BoostRequest(models.Model):
 
 
 class SavedListing(models.Model):
-    id      = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
-    user    = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='saved_listings')
-    listing = models.ForeignKey(ShopListing, on_delete=models.CASCADE, related_name='saved_by')
+    id       = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    user     = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='saved_listings')
+    listing  = models.ForeignKey(ShopListing, on_delete=models.CASCADE, related_name='saved_by')
     saved_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'saved_listings'
         unique_together = ('user', 'listing')
+
+
+class ShopDocument(models.Model):
+    """Documents required for shop verification and approval."""
+    DOCUMENT_TYPES = [
+        ('business_registration', 'Business Registration Certificate'),
+        ('tax_id',               'Tax Identification Number'),
+        ('id_proof',             'Government ID Proof'),
+        ('bank_statement',       'Bank Account Statement'),
+        ('trade_license',        'Trade License'),
+        ('vat_certificate',      'VAT Certificate'),
+    ]
+    STATUS_CHOICES = [
+        ('pending',  'Pending Review'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    id            = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    shop          = models.ForeignKey(Shop, on_delete=models.CASCADE, related_name='documents')
+    document_type = models.CharField(max_length=50, choices=DOCUMENT_TYPES)
+    document_file = models.FileField(upload_to='shop_documents/%Y/%m/')
+    document_name = models.CharField(max_length=255, help_text="Original filename or description")
+    status        = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
+    rejection_reason = models.TextField(blank=True, null=True)
+
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='reviewed_documents',
+    )
+
+    class Meta:
+        db_table = 'shop_documents'
+        ordering = ['-uploaded_at']
+
+    def __str__(self):
+        return f"{self.get_document_type_display()} - {self.shop.name}"
+
+
+class ShopApprovalRequest(models.Model):
+    """Tracks the shop approval workflow."""
+    STATUS_CHOICES = [
+        ('draft',             'Draft - Not Submitted'),
+        ('pending',           'Pending Approval'),
+        ('in_review',         'Under Review'),
+        ('approved',          'Approved'),
+        ('rejected',          'Rejected'),
+        ('changes_requested', 'Changes Requested'),
+    ]
+
+    id   = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    shop = models.OneToOneField(Shop, on_delete=models.CASCADE, related_name='approval_request')
+
+    # Business details
+    business_name       = models.CharField(max_length=200)
+    registration_number = models.CharField(max_length=100, blank=True)
+    tax_number          = models.CharField(max_length=100, blank=True)
+    business_address    = models.TextField()
+    business_phone      = models.CharField(max_length=20)
+    business_email      = models.EmailField()
+
+    # Additional info
+    business_description = models.TextField(blank=True)
+    years_in_business    = models.PositiveSmallIntegerField(default=0)
+    employee_count       = models.PositiveSmallIntegerField(default=1)
+
+    # Status tracking
+    status                  = models.CharField(max_length=20, choices=STATUS_CHOICES, default='draft')
+    admin_notes             = models.TextField(blank=True, null=True)
+    changes_requested_notes = models.TextField(blank=True, null=True)
+
+    # Timestamps
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    reviewed_at  = models.DateTimeField(null=True, blank=True)
+    reviewed_by  = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='approved_shops',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'shop_approval_requests'
+        ordering = ['-submitted_at']
+
+    def __str__(self):
+        return f"{self.business_name} - {self.status}"
+
+    def submit_for_approval(self):
+        self.status       = 'pending'
+        self.submitted_at = timezone.now()
+        self.save()
+
+    def approve(self, admin_user, notes=None):
+        self.status      = 'approved'
+        self.reviewed_at = timezone.now()
+        self.reviewed_by = admin_user
+        self.admin_notes = notes
+        self.save()
+        # Activate the shop
+        self.shop.is_active = True
+        self.shop.save()
+
+    def reject(self, admin_user, reason):
+        self.status      = 'rejected'
+        self.reviewed_at = timezone.now()
+        self.reviewed_by = admin_user
+        self.admin_notes = reason
+        self.save()
+
+    def request_changes(self, admin_user, notes):
+        self.status                  = 'changes_requested'
+        self.changes_requested_notes = notes
+        self.admin_notes             = notes
+        self.reviewed_by             = admin_user
+        self.save()

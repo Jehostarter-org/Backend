@@ -13,6 +13,7 @@ class Notification(models.Model):
 
     NOTIF_TYPES = [
         ('community_post',    'New Community Post'),
+        ('community_message', 'New Community Message'),
         ('comment',           'Comment on Post'),
         ('like',              'Post Liked'),
         ('mention',           'You were Mentioned'),

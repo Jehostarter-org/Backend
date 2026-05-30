@@ -1,0 +1,59 @@
+{% extends "portal/base.html" %}
+
+{% block title %}Admin Dashboard — Jehostarter{% endblock %}
+
+{% block body %}
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">J</span>
+      <strong>Jehostarter</strong>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="{% url 'portal_dashboard' %}" class="nav-link active">Dashboard</a>
+      <a href="{% url 'portal_shops' %}" class="nav-link">Shop approvals</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="admin-user" class="admin-user"></div>
+      <button id="logout-btn" class="btn btn-ghost btn-small">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="page-header">
+      <div>
+        <h1>Dashboard</h1>
+        <p>Overview of shops waiting for your review.</p>
+      </div>
+      <a href="{% url 'portal_shops' %}" class="btn btn-primary">Review shops</a>
+    </header>
+
+    <section class="stats-grid" id="stats-grid">
+      <article class="stat-card">
+        <span class="stat-label">Pending approval</span>
+        <strong id="stat-pending" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Active shops</span>
+        <strong id="stat-active" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Rejected</span>
+        <strong id="stat-rejected" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Changes requested</span>
+        <strong id="stat-changes" class="stat-value">—</strong>
+      </article>
+    </section>
+  </main>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  Portal.requireAuth();
+  Portal.initShell();
+  Portal.initDashboardPage();
+</script>
+{% endblock %}

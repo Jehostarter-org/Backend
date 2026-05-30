@@ -5,10 +5,18 @@ from rest_framework.views import APIView
 from django.utils.text import slugify
 import uuid
 from .models import Community, CommunityMember, Post, Comment, PostLike, PostReport, Message
+from .message_notifications import notify_community_members
 from .serializers import (
     CommunitySerializer, CommunityMemberSerializer,
     PostSerializer, CommentSerializer, PostReportSerializer, MessageSerializer,
 )
+from django.contrib.auth import get_user_model
+import secrets
+from datetime import timedelta
+from django.utils import timezone
+from django.core.mail import send_mail
+from django.conf import settings as django_settings
+from .models import CommunityInvite
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -208,13 +216,14 @@ class CommunityMessageHistoryView(generics.ListCreateAPIView):
         community_id = self.kwargs['pk']
         self._assert_member(community_id)
         attachment = self.request.FILES.get('attachment')
-        serializer.save(
+        message = serializer.save(
             sender=self.request.user,
             community_id=community_id,
             attachment_name=getattr(attachment, 'name', '') if attachment else '',
             attachment_type=getattr(attachment, 'content_type', '') if attachment else '',
             attachment_size=getattr(attachment, 'size', 0) if attachment else 0,
         )
+        notify_community_members(message)
 
 
 class DeleteMessageView(APIView):
@@ -251,3 +260,162 @@ class DeleteMessageView(APIView):
         message.is_deleted = True
         message.save(update_fields=['is_deleted'])
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+class RemoveMemberView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk, user_pk):
+        if not _is_community_admin(request.user, pk):
+            return Response({'detail': 'Admin access required.'}, status=403)
+        deleted, _ = CommunityMember.objects.filter(
+            community_id=pk, user_id=user_pk
+        ).delete()
+        if not deleted:
+            return Response({'detail': 'Member not found.'}, status=404)
+        # Update member count
+        Community.objects.filter(pk=pk).update(
+            member_count=CommunityMember.objects.filter(community_id=pk).count()
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class GenerateInviteLinkView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if not _is_community_admin(request.user, pk):
+            return Response({'detail': 'Admin access required.'}, status=403)
+        try:
+            community = Community.objects.get(pk=pk)
+        except Community.DoesNotExist:
+            return Response({'detail': 'Community not found.'}, status=404)
+
+        token      = secrets.token_urlsafe(32)
+        expires_at = timezone.now() + timedelta(days=7)
+
+        invite = CommunityInvite.objects.create(
+            community=community,
+            invited_by=request.user,
+            token=token,
+            expires_at=expires_at,
+        )
+
+        frontend_url = getattr(django_settings, 'FRONTEND_URL', 'http://localhost:3000')
+        invite_url   = f"{frontend_url}/invite/{invite.token}"
+
+        return Response({
+            'invite_url': invite_url,
+            'token':      invite.token,
+            'expires_at': invite.expires_at.isoformat(),
+        })
+
+
+class InviteByEmailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        if not _is_community_admin(request.user, pk):
+            return Response({'detail': 'Admin access required.'}, status=403)
+        try:
+            community = Community.objects.get(pk=pk)
+        except Community.DoesNotExist:
+            return Response({'detail': 'Community not found.'}, status=404)
+
+        emails = request.data.get('emails', [])
+        if not emails:
+            return Response({'detail': 'No emails provided.'}, status=400)
+
+        User         = get_user_model()
+        frontend_url = getattr(django_settings, 'FRONTEND_URL', 'http://localhost:3000')
+        sent         = []
+        skipped      = []
+
+        for email in emails:
+            email = email.strip().lower()
+            if not email:
+                continue
+
+            # Check if user exists in the platform
+            if not User.objects.filter(email=email).exists():
+                skipped.append(email)
+                continue
+
+            # Skip if already a member
+            user = User.objects.get(email=email)
+            if CommunityMember.objects.filter(community=community, user=user).exists():
+                skipped.append(email)
+                continue
+
+            token      = secrets.token_urlsafe(32)
+            expires_at = timezone.now() + timedelta(days=7)
+
+            invite = CommunityInvite.objects.create(
+                community=community,
+                invited_by=request.user,
+                email=email,
+                token=token,
+                expires_at=expires_at,
+            )
+
+            invite_url = f"{frontend_url}/invite/{invite.token}"
+
+            send_mail(
+                subject=f"You've been invited to join {community.name}",
+                message=(
+                    f"Hi,\n\n"
+                    f"{request.user.username} has invited you to join "
+                    f"'{community.name}' on the platform.\n\n"
+                    f"Click the link below to accept:\n{invite_url}\n\n"
+                    f"This link expires in 7 days."
+                ),
+                from_email=getattr(django_settings, 'DEFAULT_FROM_EMAIL', 'noreply@example.com'),
+                recipient_list=[email],
+                fail_silently=True,
+            )
+            sent.append(email)
+
+        return Response({
+            'sent':    sent,
+            'skipped': skipped,
+            'detail':  f"Invites sent to {len(sent)} user(s). {len(skipped)} skipped.",
+        })
+
+
+class AcceptInviteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, token):
+        try:
+            invite = CommunityInvite.objects.select_related('community').get(
+                token=token,
+                used=False,
+            )
+        except CommunityInvite.DoesNotExist:
+            return Response({'detail': 'Invalid or expired invite link.'}, status=404)
+
+        if invite.expires_at < timezone.now():
+            return Response({'detail': 'This invite link has expired.'}, status=410)
+
+        community = invite.community
+        member, created = CommunityMember.objects.get_or_create(
+            community=community,
+            user=request.user,
+        )
+
+        if not created:
+            return Response({'detail': 'You are already a member of this community.'}, status=400)
+
+        # Mark invite as used
+        invite.used    = True
+        invite.used_at = timezone.now()
+        invite.save(update_fields=['used', 'used_at'])
+
+        # Update member count
+        Community.objects.filter(pk=community.pk).update(
+            member_count=CommunityMember.objects.filter(community=community).count()
+        )
+
+        return Response({
+            'detail':       'You have successfully joined the community.',
+            'community_id': community.pk,
+        })

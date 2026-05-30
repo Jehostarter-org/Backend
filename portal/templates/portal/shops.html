@@ -1,0 +1,71 @@
+{% extends "portal/base.html" %}
+
+{% block title %}Shop Approvals — Jehostarter Admin{% endblock %}
+
+{% block body %}
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">J</span>
+      <strong>Jehostarter</strong>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="{% url 'portal_dashboard' %}" class="nav-link">Dashboard</a>
+      <a href="{% url 'portal_shops' %}" class="nav-link active">Shop approvals</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="admin-user" class="admin-user"></div>
+      <button id="logout-btn" class="btn btn-ghost btn-small">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="page-header">
+      <div>
+        <h1>Shop approvals</h1>
+        <p>Review submitted shops and approve or reject them.</p>
+      </div>
+      <button id="refresh-shops" class="btn btn-secondary">Refresh</button>
+    </header>
+
+    <div id="shops-error" class="alert alert-error hidden"></div>
+    <div id="shops-loading" class="loading">Loading pending shops…</div>
+    <div id="shops-empty" class="empty-state hidden">
+      <h2>No shops pending approval</h2>
+      <p>New shop submissions will appear here.</p>
+    </div>
+    <div id="shops-list" class="shop-list"></div>
+  </main>
+</div>
+
+<dialog id="shop-modal" class="modal">
+  <form method="dialog" class="modal-panel">
+    <header class="modal-header">
+      <div>
+        <h2 id="modal-shop-name">Shop details</h2>
+        <p id="modal-shop-meta"></p>
+      </div>
+      <button type="button" class="btn btn-ghost btn-small" id="modal-close">Close</button>
+    </header>
+    <div id="modal-body" class="modal-body"></div>
+    <footer class="modal-footer">
+      <label class="notes-field">
+        Notes / rejection reason
+        <textarea id="modal-notes" rows="3" placeholder="Optional for approval. Required for rejection."></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-danger" id="modal-reject">Reject</button>
+        <button type="button" class="btn btn-primary" id="modal-approve">Approve shop</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  Portal.requireAuth();
+  Portal.initShell();
+  Portal.initShopsPage();
+</script>
+{% endblock %}

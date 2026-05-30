@@ -4,11 +4,14 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.views.decorators.csrf import csrf_exempt
 
+import custom_admin  # noqa: F401 — superuser-friendly admin + site branding
 from strawberry.django.views import AsyncGraphQLView
 from schema.schema import schema
+from users.views import VerifyEmailView, ResendVerificationEmailView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('portal/', include('portal.urls')),
 
     # ── GraphQL (HTTP — queries + mutations) ──────────────────────────────────
     # csrf_exempt because clients authenticate via Bearer token not CSRF cookie.
@@ -16,6 +19,9 @@ urlpatterns = [
     path('graphql/', csrf_exempt(AsyncGraphQLView.as_view(schema=schema))),
 
     # ── REST API ──────────────────────────────────────────────────────────────
+    # Email verification (registered here so they are always available)
+    path('api/users/verify-email/', VerifyEmailView.as_view(), name='verify_email'),
+    path('api/users/resend-verification/', ResendVerificationEmailView.as_view(), name='resend_verification'),
     path('api/users/',         include('users.urls')),
     path('api/memberships/',   include('memberships.urls')),
     path('api/shops/',         include('shops.urls')),

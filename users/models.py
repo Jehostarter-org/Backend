@@ -27,16 +27,13 @@ class User(AbstractUser):
     state_province      = models.CharField(max_length=100, blank=True)
 
     # PostGIS Point — SRID 4326 = standard GPS (WGS84)
-    # Set from GPS, IP geolocation, or timezone detection.
-    # Enables fast ST_DWithin spatial queries (no Python math needed).
     location = gis_models.PointField(
-        geography=True,   # geography=True → distances in metres, not degrees
+        geography=True,
         srid=4326,
         null=True,
         blank=True,
     )
 
-    # How was location determined? Used for trust/display purposes.
     LOCATION_SOURCE = [
         ('gps',      'GPS'),
         ('ip',       'IP Geolocation'),
@@ -72,12 +69,10 @@ class User(AbstractUser):
 
     @property
     def latitude(self):
-        """Convenience accessor — returns float or None."""
         return self.location.y if self.location else None
 
     @property
     def longitude(self):
-        """Convenience accessor — returns float or None."""
         return self.location.x if self.location else None
 
     @property
@@ -99,3 +94,34 @@ class User(AbstractUser):
     class Meta:
         db_table = 'users'
         ordering = ['-created_at']
+
+
+class EmailVerificationCode(models.Model):
+    """One-time code emailed to the user after registration."""
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='email_verification_codes',
+    )
+    code_hash = models.CharField(max_length=64)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    max_attempts = models.PositiveSmallIntegerField(default=5)
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'email_verification_codes'
+        ordering = ['-created_at']
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_used(self):
+        return self.used_at is not None
+
+    def __str__(self):
+        return f'OTP for {self.user.email} (expires {self.expires_at})'

@@ -17,12 +17,23 @@ from rest_framework.response import Response
 
 from .serializers import (
     RegisterSerializer,
+    RegisterResponseSerializer,
+    VerifyEmailSerializer,
     UserProfileSerializer,
     UserUpdateSerializer,
     EmailTokenObtainPairSerializer,
+    AdminRegisterSerializer,
+    AdminTokenObtainPairSerializer,
+    AdminProfileSerializer,
 )
+from .email_verification import send_verification_email, verify_code
 
 User = get_user_model()
+
+
+class IsStaffUser(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return bool(request.user and request.user.is_authenticated and request.user.is_staff)
 
 
 class RegisterView(generics.CreateAPIView):
@@ -30,10 +41,81 @@ class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        try:
+            send_verification_email(user)
+        except Exception as exc:
+            return Response(
+                {
+                    'detail': 'Account created but we could not send the verification email. '
+                              'Use resend on the verify page or check email settings.',
+                    'email_error': str(exc),
+                    'id': user.id,
+                    'email': user.email,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        data = RegisterResponseSerializer(user).data
+        return Response(data, status=status.HTTP_201_CREATED)
+
+
+class VerifyEmailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = VerifyEmailSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        if user.is_verified:
+            return Response({'detail': 'Email is already verified.', 'is_verified': True})
+        ok, message = verify_code(user, serializer.validated_data['code'])
+        if not ok:
+            return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'detail': message, 'is_verified': True})
+
+
+class ResendVerificationEmailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if user.is_verified:
+            return Response({'detail': 'Email is already verified.'})
+        try:
+            send_verification_email(user)
+        except Exception as exc:
+            return Response(
+                {'detail': f'Could not send email: {exc}'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response({'detail': 'Verification code sent. Check your inbox.'})
+
 
 class LoginView(TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
+
+
+class AdminRegisterView(generics.CreateAPIView):
+    queryset           = User.objects.all()
+    serializer_class   = AdminRegisterSerializer
+    permission_classes = [permissions.AllowAny]
+
+
+class AdminLoginView(TokenObtainPairView):
+    serializer_class   = AdminTokenObtainPairSerializer
+    permission_classes = [permissions.AllowAny]
+
+
+class AdminMeView(generics.RetrieveAPIView):
+    permission_classes = [IsStaffUser]
+    serializer_class   = AdminProfileSerializer
+
+    def get_object(self):
+        return self.request.user
 
 
 class MeView(generics.RetrieveUpdateAPIView):

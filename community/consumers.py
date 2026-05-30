@@ -11,7 +11,8 @@ Supported server → client message types
 ----------------------------------------
   { "type": "message",         ..., "reply_to": { id, sender_username, content } | null }
   { "type": "typing",          ... }
-  { "type": "user_joined",     ... }
+  { "type": "user_joined",     "username": "...", "user_id": "..." }
+  { "type": "user_left",       "username": "...", "user_id": "..." }
   { "type": "message_deleted", "message_id": "<id>", "deleted_by": "<user_id>" }
 """
 
@@ -21,6 +22,7 @@ from channels.db import database_sync_to_async
 from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
 from .models import Community, CommunityMember, Message
+from .message_notifications import notify_community_members
 
 User = get_user_model()
 
@@ -52,6 +54,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
 
         print(f'[WS Community] {self.user.username} connected to {self.community_id}')
 
+        # Notify everyone (including self) that this user is now online
         await self.channel_layer.group_send(self.group_name, {
             'type':     'user_joined',
             'username': self.user.username,
@@ -61,6 +64,12 @@ class CommunityConsumer(AsyncWebsocketConsumer):
     async def disconnect(self, code):
         print(f'[WS Community] {getattr(self, "user", "unknown")} disconnected. code={code}')
         if hasattr(self, 'group_name'):
+            if hasattr(self, 'user') and self.user is not None:
+                await self.channel_layer.group_send(self.group_name, {
+                    'type':     'user_left',
+                    'username': self.user.username,
+                    'user_id':  str(self.user.id),
+                })
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
 
     # ── Receive from client ───────────────────────────────────────────────────
@@ -88,7 +97,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
                 'sender_id':       str(self.user.id),
                 'sender_username': self.user.username,
                 'sender_avatar':   await self._get_avatar(),
-                'reply_to':        reply_to_preview,   # None or { id, sender_username, content }
+                'reply_to':        reply_to_preview,
                 'attachment_url':  None,
                 'attachment_name': '',
                 'attachment_type': '',
@@ -137,7 +146,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             'sender_id':       event['sender_id'],
             'sender_username': event['sender_username'],
             'sender_avatar':   event['sender_avatar'],
-            'reply_to':        event.get('reply_to'),   # forwarded as-is
+            'reply_to':        event.get('reply_to'),
             'attachment_url':  event.get('attachment_url'),
             'attachment_name': event.get('attachment_name', ''),
             'attachment_type': event.get('attachment_type', ''),
@@ -155,6 +164,13 @@ class CommunityConsumer(AsyncWebsocketConsumer):
     async def user_joined(self, event):
         await self.send(text_data=json.dumps({
             'type':     'user_joined',
+            'username': event['username'],
+            'user_id':  event['user_id'],
+        }))
+
+    async def user_left(self, event):
+        await self.send(text_data=json.dumps({
+            'type':     'user_left',
             'username': event['username'],
             'user_id':  event['user_id'],
         }))
@@ -195,10 +211,6 @@ class CommunityConsumer(AsyncWebsocketConsumer):
 
     @database_sync_to_async
     def _save_message(self, content, reply_to_id=None):
-        """
-        Save a message. If reply_to_id is provided and valid, attach it.
-        Returns (message, reply_to_preview_dict | None).
-        """
         reply_to_obj     = None
         reply_to_preview = None
 
@@ -212,11 +224,10 @@ class CommunityConsumer(AsyncWebsocketConsumer):
                 reply_to_preview = {
                     'id':              str(reply_to_obj.id),
                     'sender_username': reply_to_obj.sender.username,
-                    # Truncate long previews to 80 chars
                     'content':         (reply_to_obj.content or '')[:80],
                 }
             except Message.DoesNotExist:
-                pass  # Invalid reply_to — treat as a normal message
+                pass
 
         message = Message.objects.create(
             community_id=self.community_id,
@@ -224,6 +235,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             content=content,
             reply_to=reply_to_obj,
         )
+        notify_community_members(message)
         return message, reply_to_preview
 
     @database_sync_to_async

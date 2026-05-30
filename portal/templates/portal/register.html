@@ -1,0 +1,67 @@
+{% extends "portal/base.html" %}
+
+{% block title %}Admin Register — Jehostarter{% endblock %}
+{% block body_class %}auth-page{% endblock %}
+
+{% block body %}
+<main class="auth-card auth-card-wide">
+  <div class="brand">
+    <span class="brand-mark">J</span>
+    <div>
+      <h1>Create admin account</h1>
+      <p>The first registration becomes the super admin. Later accounts need the admin secret.</p>
+      <p class="hint">Already signed up as a normal user? Use the same email here with the admin secret to upgrade that account.</p>
+    </div>
+  </div>
+
+  <form id="register-form" class="form">
+    <div id="register-error" class="alert alert-error hidden"></div>
+    <div id="register-success" class="alert alert-success hidden"></div>
+
+    <div class="form-row">
+      <label>
+        First name
+        <input type="text" name="first_name" autocomplete="given-name">
+      </label>
+      <label>
+        Last name
+        <input type="text" name="last_name" autocomplete="family-name">
+      </label>
+    </div>
+
+    <label>
+      Username
+      <input type="text" name="username" autocomplete="username" required>
+    </label>
+    <label>
+      Email
+      <input type="email" name="email" autocomplete="email" required>
+    </label>
+    <label>
+      Password
+      <input type="password" name="password" autocomplete="new-password" minlength="8" required>
+    </label>
+    <label>
+      Confirm password
+      <input type="password" name="password2" autocomplete="new-password" minlength="8" required>
+    </label>
+    <label>
+      Admin secret <span class="hint">(required after the first admin exists)</span>
+      <input type="password" name="admin_secret" autocomplete="off">
+    </label>
+
+    <button type="submit" class="btn btn-primary">Create admin account</button>
+  </form>
+
+  <p class="auth-footer">
+    Already have access?
+    <a href="{% url 'portal_login' %}">Sign in</a>
+  </p>
+</main>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  Portal.initRegisterPage();
+</script>
+{% endblock %}

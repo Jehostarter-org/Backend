@@ -1,5 +1,6 @@
 from rest_framework import generics, permissions, filters
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
@@ -8,9 +9,20 @@ from django.conf import settings
 from django.contrib.gis.geos import Point
 from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.measure import D
+from rest_framework import status
+from rest_framework.decorators import action
+from rest_framework.permissions import IsAdminUser
+from django.shortcuts import get_object_or_404
 
-from .models import Shop, Category, ShopListing, BoostRequest
-from .serializers import ShopSerializer, CategorySerializer, ShopListingSerializer, BoostRequestSerializer
+from .models import Shop, Category, ShopListing, BoostRequest, ShopDocument, ShopApprovalRequest, SavedListing
+from .serializers import (
+    ShopSerializer, CategorySerializer, ShopListingSerializer,
+    BoostRequestSerializer, ShopCreateWithApprovalSerializer,
+    ShopApprovalStatusSerializer, ShopApprovalRequestSerializer,
+    AdminShopApprovalListSerializer, AdminShopApprovalDetailSerializer,
+    AdminApprovalActionSerializer, DocumentReviewSerializer,
+    ShopDocumentSerializer, SavedListingSerializer,
+)
 
 # Default search radius
 DEFAULT_RADIUS_KM = 50
@@ -88,7 +100,7 @@ class MyShopView(generics.RetrieveAPIView):
     def retrieve(self, request, *args, **kwargs):
         instance = self.get_object()
         if instance is None:
-            return Response(None, status=200)  # no shop yet — not an error
+            return Response(None, status=200)
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
@@ -134,17 +146,10 @@ class NearbyShopsView(generics.ListAPIView):
 class ShopListingListCreateView(generics.ListCreateAPIView):
     """
     GET  /api/shops/listings/  — proximity-aware listing browse
-    POST /api/shops/listings/  — create listing (auth required)
-
-    Query params:
-      ?category=vehicles     — filter by category slug
-      ?country=NG            — explicit country override
-      ?search=ford           — full-text search on title/description
-      ?ordering=price        — sort by price or created_at
-      ?lat=6.52&lon=3.37     — explicit coords
-      ?radius=20             — search radius in km (default 50)
+    POST /api/shops/listings/  — create listing (auth required, multipart for images)
     """
     serializer_class = ShopListingSerializer
+    parser_classes   = [MultiPartParser, FormParser, JSONParser]
     filter_backends  = [filters.SearchFilter, filters.OrderingFilter]
     search_fields    = ['title', 'description']
     ordering_fields  = ['price', 'created_at']
@@ -160,17 +165,14 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
         qs        = ShopListing.objects.filter(is_available=True, is_deleted=False)
         radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
 
-        # ── Category filter ───────────────────────────────────────────────────
         category = request.query_params.get('category')
         if category:
             qs = qs.filter(category__slug=category)
 
-        # ── Explicit country override ─────────────────────────────────────────
         country = request.query_params.get('country')
         if country:
             return qs.filter(shop__country_code=country)
 
-        # ── Explicit coords override ──────────────────────────────────────────
         lat = request.query_params.get('lat')
         lon = request.query_params.get('lon')
         if lat and lon:
@@ -178,14 +180,12 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
             shop_ids = _nearby_shop_ids(point, radius_km)
             return qs.filter(shop__id__in=shop_ids)
 
-        # ── Stored user location ──────────────────────────────────────────────
         if user:
             point = _point_from_user(user)
             if point:
                 shop_ids = _nearby_shop_ids(point, radius_km)
                 return qs.filter(shop__id__in=shop_ids)
 
-            # Fallback: country filter
             countries = [c for c in [user.current_country, user.destination_country] if c]
             if countries:
                 return qs.filter(shop__country_code__in=countries)
@@ -193,7 +193,13 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(shop=self.request.user.shop)
+        user = self.request.user
+        if not hasattr(user, 'shop'):
+            raise ValidationError({'detail': 'You must create a shop before adding listings.'})
+        shop = user.shop
+        if not shop.is_active:
+            raise ValidationError({'detail': 'Your shop must be approved before adding listings.'})
+        serializer.save(shop=shop, is_available=True)
 
 
 class ShopListingDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -237,3 +243,297 @@ class BoostedListingsView(generics.ListAPIView):
             return qs.filter(shop__id__in=shop_ids)
 
         return qs.filter(shop__country_code=user.current_country)
+
+
+class MySavedListingsView(generics.ListAPIView):
+    """GET /api/shops/saved/ — buyer's bookmarked listings (cart)."""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class   = SavedListingSerializer
+
+    def get_queryset(self):
+        return (
+            SavedListing.objects
+            .filter(user=self.request.user)
+            .select_related('listing__shop', 'listing__category')
+            .prefetch_related('listing__images')
+            .order_by('-saved_at')
+        )
+
+
+class BookmarkListingView(APIView):
+    """
+    POST   /api/shops/listings/<pk>/bookmark/ — save listing to buyer cart
+    DELETE /api/shops/listings/<pk>/bookmark/ — remove from buyer cart
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        listing = get_object_or_404(
+            ShopListing,
+            pk=pk,
+            is_available=True,
+            is_deleted=False,
+        )
+        _, created = SavedListing.objects.get_or_create(
+            user=request.user,
+            listing=listing,
+        )
+        serializer = ShopListingSerializer(listing, context={'request': request})
+        if not created:
+            return Response(
+                {'detail': 'Already in your cart.', 'saved': True, 'listing': serializer.data},
+                status=status.HTTP_200_OK,
+            )
+        return Response(
+            {'detail': 'Added to your cart.', 'saved': True, 'listing': serializer.data},
+            status=status.HTTP_201_CREATED,
+        )
+
+    def delete(self, request, pk):
+        deleted, _ = SavedListing.objects.filter(
+            user=request.user,
+            listing_id=pk,
+        ).delete()
+        if not deleted:
+            return Response({'detail': 'Not in your cart.'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'detail': 'Removed from your cart.', 'saved': False})
+
+
+class ShopCreateWithApprovalView(generics.CreateAPIView):
+    """
+    Create a shop with documents for admin approval
+    POST /api/shops/create-with-approval/
+    Accepts multipart/form-data (shop fields, business details, document files).
+    """
+    serializer_class   = ShopCreateWithApprovalSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes     = [MultiPartParser, FormParser, JSONParser]
+
+    def create(self, request, *args, **kwargs):
+        if hasattr(request.user, 'shop'):
+            return Response(
+                {'detail': 'You already have a shop. Use the resubmit endpoint if changes were requested.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        shop = serializer.save()
+
+        return Response(
+            {
+                'message': 'Shop submitted for approval successfully.',
+                'shop': ShopApprovalStatusSerializer(shop, context={'request': request}).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class MyShopApprovalStatusView(generics.RetrieveAPIView):
+    """
+    Get current user's shop approval status
+    GET /api/shops/my/approval-status/
+    """
+    serializer_class   = ShopApprovalStatusSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        if not hasattr(self.request.user, 'shop'):
+            return None
+        return self.request.user.shop
+
+    def retrieve(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance is None:
+            return Response(
+                {'has_shop': False, 'message': 'No shop created yet'},
+                status=status.HTTP_200_OK,
+            )
+        serializer = self.get_serializer(instance)
+        return Response({'has_shop': True, 'shop': serializer.data})
+
+
+class UploadShopDocumentView(generics.CreateAPIView):
+    """
+    Upload additional documents for existing shop
+    POST /api/shops/<shop_id>/documents/
+    """
+    serializer_class   = ShopDocumentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        shop_id = self.kwargs.get('shop_id')
+        shop    = get_object_or_404(Shop, id=shop_id, owner=self.request.user)
+        serializer.save(shop=shop)
+
+
+class DeleteShopDocumentView(generics.DestroyAPIView):
+    """
+    Delete a document (only if still pending)
+    DELETE /api/shops/documents/<pk>/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return ShopDocument.objects.filter(shop__owner=self.request.user, status='pending')
+
+    def destroy(self, request, *args, **kwargs):
+        document = self.get_object()
+        document.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ResubmitShopApprovalView(generics.UpdateAPIView):
+    """
+    Resubmit shop for approval after changes were requested
+    PUT/PATCH /api/shops/my/resubmit/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_object(self):
+        return get_object_or_404(ShopApprovalRequest, shop__owner=self.request.user)
+
+    def update(self, request, *args, **kwargs):
+        approval_request = self.get_object()
+
+        if approval_request.status != 'changes_requested':
+            return Response(
+                {'error': 'Cannot resubmit. Current status: ' + approval_request.status},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = ShopApprovalRequestSerializer(approval_request, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        approval_request.submit_for_approval()
+
+        return Response({
+            'message': 'Shop resubmitted for approval successfully',
+            'status': approval_request.status,
+        })
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ADMIN VIEWS
+# ──────────────────────────────────────────────────────────────────────────────
+
+class AdminPendingApprovalsView(generics.ListAPIView):
+    """Admin: List all shops pending approval — GET /api/shops/admin/shops/pending/"""
+    serializer_class   = AdminShopApprovalListSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        return Shop.objects.filter(
+            is_active=False,
+            approval_request__status__in=['pending', 'in_review'],
+        ).select_related('owner', 'approval_request')
+
+
+class AdminAllShopApprovalsView(generics.ListAPIView):
+    """Admin: List all shop approval requests — GET /api/shops/admin/shops/approvals/"""
+    serializer_class   = AdminShopApprovalListSerializer
+    permission_classes = [IsAdminUser]
+    filter_backends    = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields      = ['name', 'owner__email', 'owner__first_name', 'owner__last_name']
+    ordering_fields    = ['created_at', 'name']
+    ordering           = ['-created_at']
+
+    def get_queryset(self):
+        queryset       = Shop.objects.select_related('owner', 'approval_request')
+        status_filter  = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(approval_request__status=status_filter)
+        return queryset
+
+
+class AdminShopApprovalDetailView(generics.RetrieveAPIView):
+    """Admin: Detailed shop approval info — GET /api/shops/admin/shops/<id>/approval-detail/"""
+    serializer_class   = AdminShopApprovalDetailSerializer
+    permission_classes = [IsAdminUser]
+    lookup_field       = 'id'
+
+    def get_queryset(self):
+        return Shop.objects.select_related('owner', 'approval_request').prefetch_related('documents')
+
+
+class AdminProcessShopApprovalView(APIView):
+    """Admin: Approve / reject / request changes — POST /api/shops/admin/shops/<shop_id>/process-approval/"""
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, shop_id):
+        shop             = get_object_or_404(Shop, id=shop_id)
+        approval_request = get_object_or_404(ShopApprovalRequest, shop=shop)
+
+        serializer = AdminApprovalActionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        action            = serializer.validated_data['action']
+        notes             = serializer.validated_data.get('notes', '')
+        changes_requested = serializer.validated_data.get('changes_requested', '')
+
+        if action == 'approve':
+            approval_request.approve(request.user, notes)
+            return Response({'message': f'Shop "{shop.name}" approved.', 'status': 'approved'})
+
+        elif action == 'reject':
+            approval_request.reject(request.user, notes)
+            return Response({'message': f'Shop "{shop.name}" rejected.', 'status': 'rejected', 'reason': notes})
+
+        elif action == 'request_changes':
+            approval_request.request_changes(request.user, changes_requested)
+            return Response({
+                'message': f'Changes requested for "{shop.name}".',
+                'status': 'changes_requested',
+                'changes_needed': changes_requested,
+            })
+
+
+class AdminReviewDocumentsView(APIView):
+    """Admin: Review a single document — POST /api/shops/admin/shops/documents/review/"""
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        serializer = DocumentReviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        document = get_object_or_404(
+            ShopDocument,
+            id=serializer.validated_data['document_id'],
+            status='pending',
+        )
+
+        document.status           = serializer.validated_data['status']
+        document.rejection_reason = serializer.validated_data.get('rejection_reason', '')
+        document.reviewed_at      = timezone.now()
+        document.reviewed_by      = request.user
+        document.save()
+
+        return Response({
+            'message': f'Document "{document.get_document_type_display()}" marked as {document.status}.',
+            'document': {
+                'id': document.id,
+                'status': document.status,
+                'rejection_reason': document.rejection_reason,
+            },
+        })
+
+
+class AdminShopStatsView(APIView):
+    """Admin: Approval statistics — GET /api/shops/admin/shops/stats/"""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        return Response({
+            'shops': {
+                'total':            Shop.objects.count(),
+                'active':           Shop.objects.filter(is_active=True).count(),
+                'pending_approval': Shop.objects.filter(approval_request__status='pending').count(),
+                'rejected':         Shop.objects.filter(approval_request__status='rejected').count(),
+                'changes_requested':Shop.objects.filter(approval_request__status='changes_requested').count(),
+            },
+            'documents': {
+                'total':        ShopDocument.objects.count(),
+                'pending_review': ShopDocument.objects.filter(status='pending').count(),
+            },
+        })

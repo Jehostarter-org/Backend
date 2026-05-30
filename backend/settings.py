@@ -16,6 +16,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY    = config('SECRET_KEY')
 DEBUG         = config('DEBUG', cast=bool, default=False)
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv(), default='localhost,127.0.0.1')
+ADMIN_REGISTRATION_SECRET = config('ADMIN_REGISTRATION_SECRET', default='').strip()
 
 INSTALLED_APPS = [
     # ── Django Core ───────────────────────────────────────────────────────────
@@ -35,6 +36,7 @@ INSTALLED_APPS = [
     'channels',
     'strawberry_django',
     'whitenoise',
+    'django_extensions',
 
     # ── Local Apps ────────────────────────────────────────────────────────────
     'users',
@@ -43,6 +45,7 @@ INSTALLED_APPS = [
     'services',
     'community',
     'notifications',
+    'portal',
 ]
 
 MIDDLEWARE = [
@@ -192,6 +195,32 @@ USE_I18N      = True
 USE_TZ        = True
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# ─── Email ──────────────────────────────────────────────────────────────────────
+# Set EMAIL_HOST_USER + EMAIL_HOST_PASSWORD in backend/.env to send real mail (SMTP).
+# Without credentials, OTP emails print to the Django runserver console only.
+_email_user = config('EMAIL_HOST_USER', default='').strip()
+_email_pass = config('EMAIL_HOST_PASSWORD', default='').strip()
+_email_backend = config('EMAIL_BACKEND', default='').strip()
+
+if _email_backend:
+    EMAIL_BACKEND = _email_backend
+elif _email_user and _email_pass:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+EMAIL_HOST          = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT          = config('EMAIL_PORT', cast=int, default=587)
+EMAIL_USE_TLS       = config('EMAIL_USE_TLS', cast=bool, default=True)
+EMAIL_HOST_USER     = _email_user
+EMAIL_HOST_PASSWORD = _email_pass
+DEFAULT_FROM_EMAIL  = config(
+    'DEFAULT_FROM_EMAIL',
+    default=_email_user or 'Jehostarter <noreply@jehostarter.com>',
+)
+FRONTEND_URL        = config('FRONTEND_URL', default='http://localhost:3000')
+EMAIL_OTP_EXPIRY_MINUTES = config('EMAIL_OTP_EXPIRY_MINUTES', cast=int, default=15)
 
 # ─── REST Framework ───────────────────────────────────────────────────────────
 REST_FRAMEWORK = {
