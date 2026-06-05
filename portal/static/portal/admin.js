@@ -377,6 +377,131 @@ const Portal = (() => {
     loadPendingShops();
   }
 
+  async function loadUsers() {
+    const loadingEl = document.getElementById('users-loading');
+    const emptyEl = document.getElementById('users-empty');
+    const listEl = document.getElementById('users-list');
+    const errorEl = document.getElementById('users-error');
+
+    loadingEl.classList.remove('hidden');
+    emptyEl.classList.add('hidden');
+    listEl.innerHTML = '';
+    errorEl.classList.add('hidden');
+
+    try {
+      const data = await api('/api/users/admin/users/');
+      const users = data.results || data || [];
+      loadingEl.classList.add('hidden');
+
+      if (!users.length) {
+        emptyEl.classList.remove('hidden');
+        return;
+      }
+
+      listEl.innerHTML = users.map(renderUserCard).join('');
+      bindUserActions();
+    } catch (error) {
+      loadingEl.classList.add('hidden');
+      if (error.status === 401 || error.status === 403) {
+        clearSession();
+        window.location.href = '/portal/login/';
+        return;
+      }
+      showError(errorEl, error.message);
+    }
+  }
+
+  function renderUserCard(user) {
+    const plan = user.membership_plan ? user.membership_plan.toUpperCase() : 'FREE';
+    const statusText = user.is_verified ? 'Verified' : 'Unverified';
+    const statusClass = user.is_verified ? 'success' : 'pending';
+    
+    return `
+      <article class="shop-card">
+        <div class="shop-card-header">
+          <div>
+            <h3>${escapeHtml(user.first_name || '')} ${escapeHtml(user.last_name || '')} <span class="shop-meta">(@${escapeHtml(user.username)})</span></h3>
+            <div class="shop-meta">
+              ${escapeHtml(user.email)} · plan: <strong>${escapeHtml(plan)}</strong>
+            </div>
+          </div>
+          <span class="status-pill status-${statusClass}">${escapeHtml(statusText)}</span>
+        </div>
+        <div class="shop-meta">
+          Location: ${escapeHtml(user.city || 'Not set')}, ${escapeHtml(user.current_country || 'Not set')} · Joined ${formatDate(user.created_at)}
+        </div>
+        <div class="shop-card-actions">
+          <button class="btn btn-secondary" data-action="view-user" data-id="${user.id}">View full details</button>
+        </div>
+      </article>
+    `;
+  }
+
+  function bindUserActions() {
+    document.querySelectorAll('[data-action="view-user"]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const userId = button.dataset.id;
+        await openUserModal(userId);
+      });
+    });
+  }
+
+  async function openUserModal(userId) {
+    const modal = document.getElementById('user-modal');
+    const body = document.getElementById('modal-body');
+    
+    body.innerHTML = '<div class="loading">Loading user details…</div>';
+    modal.showModal();
+
+    try {
+      const user = await api(`/api/users/admin/users/${userId}/`);
+      document.getElementById('modal-user-name').textContent = `${user.first_name || ''} ${user.last_name || ''}`;
+      document.getElementById('modal-user-meta').textContent = `@${user.username} · ${user.email}`;
+
+      body.innerHTML = `
+        <div class="detail-grid">
+          <div class="detail-block"><strong>Username</strong>@${escapeHtml(user.username || '—')}</div>
+          <div class="detail-block"><strong>Email</strong>${escapeHtml(user.email || '—')}</div>
+          <div class="detail-block"><strong>Phone</strong>${escapeHtml(user.phone || '—')}</div>
+          <div class="detail-block"><strong>Joined</strong>${formatDate(user.created_at)}</div>
+          <div class="detail-block"><strong>Verification status</strong>${user.is_verified ? 'Verified ✓' : 'Unverified ✗'}</div>
+          <div class="detail-block"><strong>Membership plan</strong>${escapeHtml(user.membership_plan?.toUpperCase() || 'FREE')}</div>
+        </div>
+        
+        <h3 style="margin-top:20px; margin-bottom:12px;">Migration Details</h3>
+        <div class="detail-grid">
+          <div class="detail-block"><strong>Migration status</strong>${escapeHtml(user.migration_status || '—')}</div>
+          <div class="detail-block"><strong>Birth country</strong>${escapeHtml(user.birth_country || '—')}</div>
+          <div class="detail-block"><strong>Current country</strong>${escapeHtml(user.current_country || '—')}</div>
+          <div class="detail-block"><strong>Destination country</strong>${escapeHtml(user.destination_country || '—')}</div>
+          <div class="detail-block"><strong>City</strong>${escapeHtml(user.city || '—')}</div>
+          <div class="detail-block"><strong>State/Province</strong>${escapeHtml(user.state_province || '—')}</div>
+        </div>
+
+        <h3 style="margin-top:20px; margin-bottom:12px;">Bio & Agreement</h3>
+        <div class="detail-block" style="margin-bottom:16px;">
+          <strong>Personal Bio</strong>
+          <p style="margin: 0; white-space: pre-wrap;">${escapeHtml(user.bio || 'No bio provided.')}</p>
+        </div>
+        <div class="detail-block">
+          <strong>Terms Acceptance</strong>
+          Accepted: ${user.accepted_terms ? 'Yes ✓' : 'No ✗'} ${user.accepted_terms_at ? `on ${formatDate(user.accepted_terms_at)}` : ''}
+        </div>
+      `;
+    } catch (error) {
+      body.innerHTML = `<div class="alert alert-error">${escapeHtml(error.message)}</div>`;
+    }
+  }
+
+  function initUsersPage() {
+    const modal = document.getElementById('user-modal');
+    document.getElementById('refresh-users').addEventListener('click', loadUsers);
+    document.getElementById('modal-close').addEventListener('click', () => modal.close());
+    document.getElementById('modal-cancel').addEventListener('click', () => modal.close());
+
+    loadUsers();
+  }
+
   function escapeHtml(value) {
     return String(value ?? '')
       .replaceAll('&', '&amp;')
@@ -397,5 +522,6 @@ const Portal = (() => {
     initRegisterPage,
     initDashboardPage,
     initShopsPage,
+    initUsersPage,
   };
 })();

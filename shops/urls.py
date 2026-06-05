@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import (
     CategoryListView, ShopCreateView, ShopDetailView, MyShopView,
-    ShopListingListCreateView, ShopListingDetailView,
+    ShopListingListCreateView, MyShopListingsView, ShopListingDetailView,
     BoostListingView, BoostedListingsView, MySavedListingsView, BookmarkListingView,
     ShopCreateWithApprovalView,
     MyShopApprovalStatusView, UploadShopDocumentView, DeleteShopDocumentView,
@@ -25,10 +25,19 @@ urlpatterns = [
     path('saved/', MySavedListingsView.as_view(), name='saved_listings'),
 
     # ── Listings ─────────────────────────────────────────────────────────────
+    # ORDERING RULES:
+    #   1. Exact literals first  (listings/, listings/my/, boosted/)
+    #   2. Paths with a pk segment AND a suffix before the bare pk catch-all
+    #      e.g. listings/<pk>/boost/ and listings/<pk>/bookmark/ MUST precede
+    #           listings/<pk>/  — otherwise Django matches the bare <pk>/ route
+    #           and the trailing "boost" or "bookmark" becomes part of the pk value,
+    #           causing a 404 because no listing has pk="abc123/boost".
+    #   3. Bare pk catch-all last  (listings/<pk>/)
     path('listings/', ShopListingListCreateView.as_view(), name='listings'),
-    path('listings/<str:pk>/bookmark/', BookmarkListingView.as_view(), name='bookmark_listing'),
-    path('listings/<str:pk>/', ShopListingDetailView.as_view(), name='listing_detail'),
-    path('listings/<str:pk>/boost/', BoostListingView.as_view(), name='boost_listing'),
+    path('listings/my/', MyShopListingsView.as_view(), name='my_listings'),         # literal — before <pk>
+    path('listings/<str:pk>/bookmark/', BookmarkListingView.as_view(), name='bookmark_listing'),  # suffix before bare pk
+    path('listings/<str:pk>/boost/', BoostListingView.as_view(), name='boost_listing'),           # suffix before bare pk
+    path('listings/<str:pk>/', ShopListingDetailView.as_view(), name='listing_detail'),           # bare pk — last
     path('boosted/', BoostedListingsView.as_view(), name='boosted_listings'),
 
     # ── Document management ──────────────────────────────────────────────────

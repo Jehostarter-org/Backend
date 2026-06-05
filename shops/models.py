@@ -48,7 +48,7 @@ class Shop(models.Model):
 
     logo      = models.ImageField(upload_to='shop_logos/', null=True, blank=True)
     banner    = models.ImageField(upload_to='shop_banners/', null=True, blank=True)
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(default=True)  # active immediately on creation
     whatsapp  = models.CharField(max_length=20, blank=True)
     website   = models.URLField(blank=True)
 

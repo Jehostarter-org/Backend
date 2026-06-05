@@ -17,17 +17,25 @@ class CommunitySerializer(serializers.ModelSerializer):
             'purpose', 'rules', 'member_count', 'post_count',
             'is_member', 'is_admin', 'created_at',
         ]
-        read_only_fields = ['id', 'creator', 'slug', 'created_at']
+        read_only_fields = ['id', 'creator', 'slug', 'is_active', 'created_at']
 
     def get_is_member(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
-            return obj.members.filter(user=request.user).exists()
+            if getattr(obj, '_is_member', None) is not None:
+                return bool(obj._is_member)
+            if obj.creator_id == request.user.pk:
+                return True
+            return obj.members.filter(user=request.user, is_banned=False).exists()
         return False
 
     def get_is_admin(self, obj):
         request = self.context.get('request')
         if request and request.user.is_authenticated:
+            if getattr(obj, '_is_admin', None) is not None:
+                return bool(obj._is_admin)
+            if obj.creator_id == request.user.pk:
+                return True
             return obj.members.filter(
                 user=request.user,
                 role__in=['admin', 'moderator'],

@@ -3,6 +3,8 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils.text import slugify
+from django.db import transaction
+from django.db.models import Exists, OuterRef, Q
 import uuid
 from .models import Community, CommunityMember, Post, Comment, PostLike, PostReport, Message
 from .message_notifications import notify_community_members
@@ -61,6 +63,7 @@ class CommunityListCreateView(generics.ListCreateAPIView):
     filter_backends  = [filters.SearchFilter]
     search_fields    = ['name', 'description', 'country_code']
     parser_classes   = [MultiPartParser, FormParser, JSONParser]
+    pagination_class = None  # return full list — paginated page 1 hid new groups after refresh
 
     def get_permissions(self):
         if self.request.method == 'POST':
@@ -68,16 +71,80 @@ class CommunityListCreateView(generics.ListCreateAPIView):
         return [permissions.IsAuthenticatedOrReadOnly()]
 
     def get_queryset(self):
-        return Community.objects.filter(is_active=True)
+        qs = (
+            Community.objects
+            .filter(is_active=True)
+            .select_related('creator')
+            .prefetch_related('members')
+        )
+        user = self.request.user
+        if user.is_authenticated:
+            membership = CommunityMember.objects.filter(
+                community_id=OuterRef('pk'),
+                user=user,
+                is_banned=False,
+            )
+            qs = qs.annotate(
+                _is_member=Exists(membership),
+                _is_admin=Exists(
+                    membership.filter(role__in=['admin', 'moderator'])
+                ),
+            )
+        return qs
 
+    @transaction.atomic
     def perform_create(self, serializer):
         user      = self.request.user
         name      = serializer.validated_data['name']
         slug      = slugify(name) + '-' + str(uuid.uuid4())[:8]
-        community = serializer.save(creator=user, slug=slug, country_code=user.current_country)
-        # Creator is always stored as admin in CommunityMember — this is the
-        # source of truth for permission checks throughout the app.
+        community = serializer.save(creator=user, slug=slug, country_code=user.current_country or '', is_active=True)
         CommunityMember.objects.create(community=community, user=user, role='admin')
+        Community.objects.filter(pk=community.pk).update(member_count=1)
+
+
+class MyCommunitiesListView(generics.ListAPIView):
+    """
+    GET /api/community/mine/ — communities the user created or joined.
+    Used for the Groups tab so created communities always appear after refresh.
+    """
+    serializer_class   = CommunitySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class   = None
+
+    def get_queryset(self):
+        user = self.request.user
+        member_ids = CommunityMember.objects.filter(
+            user=user,
+            is_banned=False,
+        ).values_list('community_id', flat=True)
+
+        admin_membership = CommunityMember.objects.filter(
+            community_id=OuterRef('pk'),
+            user=user,
+            role__in=['admin', 'moderator'],
+            is_banned=False,
+        )
+        return (
+            Community.objects
+            .filter(is_active=True)
+            .filter(Q(id__in=member_ids) | Q(creator=user))
+            .distinct()
+            .select_related('creator')
+            .prefetch_related('members')
+            .annotate(_is_admin=Exists(admin_membership))
+        )
+
+    def create(self, request, *args, **kwargs):
+        """Return full community payload with is_member/is_admin after membership row exists."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        output = CommunitySerializer(
+            serializer.instance,
+            context=self.get_serializer_context(),
+        )
+        headers = self.get_success_headers(output.data)
+        return Response(output.data, status=status.HTTP_201_CREATED, headers=headers)
 
 
 class CommunityDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -102,12 +169,20 @@ class JoinCommunityView(APIView):
         member, created = CommunityMember.objects.get_or_create(community=community, user=request.user)
         if not created:
             return Response({'detail': 'Already a member.'}, status=400)
+        # FIX: update member_count after a new member joins
+        Community.objects.filter(pk=pk).update(
+            member_count=CommunityMember.objects.filter(community_id=pk).count()
+        )
         return Response({'detail': 'Joined community.'})
 
 
 class LeaveCommunityView(APIView):
     def delete(self, request, pk):
         CommunityMember.objects.filter(community_id=pk, user=request.user).delete()
+        # Keep member_count in sync on leave
+        Community.objects.filter(pk=pk).update(
+            member_count=CommunityMember.objects.filter(community_id=pk).count()
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -208,9 +283,14 @@ class CommunityMessageHistoryView(generics.ListCreateAPIView):
         return (
             Message.objects
             .filter(community_id=community_id, is_deleted=False)
-            .select_related('sender')
+            .select_related('sender', 'reply_to__sender')
             .order_by('-created_at')[:50]
-        )[::-1]
+        )
+
+    def list(self, request, *args, **kwargs):
+        qs = self.get_queryset()
+        serializer = self.get_serializer(reversed(list(qs)), many=True)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         community_id = self.kwargs['pk']

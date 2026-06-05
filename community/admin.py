@@ -1,6 +1,7 @@
 # admin.py (add to your existing admin.py file)
 from django.contrib import admin
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.urls import reverse
 from django.utils import timezone
 from django.db.models import Count, Q, F
@@ -174,8 +175,8 @@ class CommunityAdmin(admin.ModelAdmin):
     
     def visibility_badge(self, obj):
         if obj.visibility == 'public':
-            return format_html('<span style="color: #27ae60;">🌍 Public</span>')
-        return format_html('<span style="color: #e74c3c;">🔒 Private</span>')
+            return mark_safe('<span style="color: #27ae60;">🌍 Public</span>')
+        return mark_safe('<span style="color: #e74c3c;">🔒 Private</span>')
     visibility_badge.short_description = 'Visibility'
     
     actions = ['activate_communities', 'deactivate_communities', 'reset_stats']
@@ -320,11 +321,11 @@ class CommunityInviteAdmin(admin.ModelAdmin):
     
     def used_badge(self, obj):
         if obj.used:
-            return format_html('<span style="color: #27ae60;">✓ Used</span>')
+            return mark_safe('<span style="color: #27ae60;">✓ Used</span>')
         elif obj.expires_at < timezone.now():
-            return format_html('<span style="color: #e74c3c;">✗ Expired</span>')
+            return mark_safe('<span style="color: #e74c3c;">✗ Expired</span>')
         else:
-            return format_html('<span style="color: #3498db;">⏳ Pending</span>')
+            return mark_safe('<span style="color: #3498db;">⏳ Pending</span>')
     used_badge.short_description = 'Status'
     
     def expires_at_display(self, obj):
@@ -401,13 +402,13 @@ class PostAdmin(admin.ModelAdmin):
     
     def moderation_badge(self, obj):
         if obj.is_deleted:
-            return format_html('<span style="color: #e74c3c;">🗑️ Deleted</span>')
+            return mark_safe('<span style="color: #e74c3c;">🗑️ Deleted</span>')
         elif obj.is_flagged:
-            return format_html('<span style="color: #f39c12;">⚠️ Flagged</span>')
+            return mark_safe('<span style="color: #f39c12;">⚠️ Flagged</span>')
         elif not obj.is_approved:
-            return format_html('<span style="color: #e67e22;">⏳ Pending</span>')
+            return mark_safe('<span style="color: #e67e22;">⏳ Pending</span>')
         else:
-            return format_html('<span style="color: #27ae60;">✓ Approved</span>')
+            return mark_safe('<span style="color: #27ae60;">✓ Approved</span>')
     moderation_badge.short_description = 'Status'
     
     actions = ['approve_posts', 'flag_posts', 'delete_posts', 'restore_posts']
@@ -589,8 +590,8 @@ class PostReportAdmin(admin.ModelAdmin):
     
     def resolved_badge(self, obj):
         if obj.resolved:
-            return format_html('<span style="color: #27ae60;">✓ Resolved</span>')
-        return format_html('<span style="color: #e74c3c;">⏳ Pending</span>')
+            return mark_safe('<span style="color: #27ae60;">✓ Resolved</span>')
+        return mark_safe('<span style="color: #e74c3c;">⏳ Pending</span>')
     resolved_badge.short_description = 'Status'
     
     actions = ['mark_resolved', 'mark_pending', 'delete_post_and_resolve']

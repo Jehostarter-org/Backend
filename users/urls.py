@@ -6,6 +6,7 @@ from .views import (
     AcceptTermsView, ChangePasswordView, DeleteAccountView,
     PublicProfileView, GoogleAuthView,
     AdminRegisterView, AdminLoginView, AdminMeView,
+    AdminUserListView, AdminUserDetailView,
 )
 from .location_view import UpdateLocationView, DetectLocationView
 
@@ -15,6 +16,8 @@ urlpatterns = [
     path('admin/register/', AdminRegisterView.as_view(),  name='admin_register'),
     path('admin/login/',    AdminLoginView.as_view(),     name='admin_login'),
     path('admin/me/',       AdminMeView.as_view(),        name='admin_me'),
+    path('admin/users/',    AdminUserListView.as_view(),  name='admin_users_list'),
+    path('admin/users/<str:pk>/', AdminUserDetailView.as_view(), name='admin_user_detail'),
     path('token/refresh/',  TokenRefreshView.as_view(),   name='token_refresh'),
     path('auth/google/',    GoogleAuthView.as_view(),     name='google_auth'),
 

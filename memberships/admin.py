@@ -1,6 +1,7 @@
 # admin.py (add to your existing admin.py file)
 from django.contrib import admin
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.urls import reverse
 from django.utils import timezone
 from django.db.models import Count, Sum, Q, F
@@ -123,14 +124,14 @@ class MembershipPlanAdmin(admin.ModelAdmin):
         
         if features:
             return format_html('<span style="font-size: 12px;">{}</span>', ' '.join(features))
-        return format_html('<span style="color: #999;">-</span>')
+        return mark_safe('<span style="color: #999;">-</span>')
     features_summary.short_description = 'Features'
     
     def max_listings_display(self, obj):
         if obj.max_shop_listings == 0:
-            return format_html('<span style="color: #999;">No shop</span>')
+            return mark_safe('<span style="color: #999;">No shop</span>')
         elif obj.max_shop_listings == 999999:
-            return format_html('<span style="color: #27ae60;">Unlimited</span>')
+            return mark_safe('<span style="color: #27ae60;">Unlimited</span>')
         else:
             return format_html('<strong>{}</strong>', obj.max_shop_listings)
     max_listings_display.short_description = 'Max Listings'
@@ -280,7 +281,7 @@ class UserMembershipAdmin(admin.ModelAdmin):
                     days
                 )
             return format_html('<span style="color: #27ae60;">{} days</span>', days)
-        return format_html('<span style="color: #e74c3c;">Expired</span>')
+        return mark_safe('<span style="color: #e74c3c;">Expired</span>')
     days_remaining.short_description = 'Days Left'
     
     def payment_info_short(self, obj):
@@ -290,7 +291,7 @@ class UserMembershipAdmin(admin.ModelAdmin):
                 obj.payment_reference,
                 obj.payment_reference[:12] + '...' if len(obj.payment_reference) > 12 else obj.payment_reference
             )
-        return format_html('<span style="color: #999;">No payment</span>')
+        return mark_safe('<span style="color: #999;">No payment</span>')
     payment_info_short.short_description = 'Payment Ref'
     
     def amount_paid_display(self, obj):

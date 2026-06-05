@@ -79,6 +79,7 @@ class ShopCreateView(generics.CreateAPIView):
             country_code = user.current_country,
             currency     = currency,
             location     = user.location,
+            is_active    = True,
         )
 
 
@@ -194,12 +195,75 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         user = self.request.user
+
+        # Auto-create a shop behind the scenes (Facebook Marketplace style)
         if not hasattr(user, 'shop'):
-            raise ValidationError({'detail': 'You must create a shop before adding listings.'})
-        shop = user.shop
-        if not shop.is_active:
-            raise ValidationError({'detail': 'Your shop must be approved before adding listings.'})
-        serializer.save(shop=shop, is_available=True)
+            currency = settings.COUNTRY_CURRENCY_MAP.get(user.current_country, 'USD')
+            Shop.objects.create(
+                owner=user,
+                name=f"{user.first_name or user.username}'s Store",
+                country_code=user.current_country or '',
+                currency=currency,
+                location=user.location,
+                city=user.city or '',
+                state_province=user.state_province or '',
+                is_active=True,
+            )
+            # Refresh so user.shop is available
+            user.refresh_from_db()
+
+        serializer.save(shop=user.shop, is_available=True)
+
+
+class MyShopListingsView(generics.ListAPIView):
+    """
+    GET /api/shops/listings/my/ — listings belonging ONLY to the authenticated user's shop.
+    Strictly owner-scoped: no other user's listings are ever returned.
+    Used by seller inventory/dashboard screens.
+    """
+    serializer_class   = ShopListingSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends    = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields      = ['title', 'description']
+    ordering_fields    = ['price', 'created_at']
+    pagination_class   = None  # Disable pagination or use default DRF pagination
+
+    def get_queryset(self):
+        user = self.request.user
+        
+        # CRITICAL SECURITY: Only return listings for the authenticated user's shop
+        # If user has no shop, return empty queryset - NEVER return all listings
+        if not hasattr(user, 'shop'):
+            return ShopListing.objects.none()
+        
+        # Double-lock: filter by both the shop's owner FK and shop relation
+        return (
+            ShopListing.objects
+            .filter(
+                shop__owner=user,  # This ensures only current user's listings
+                is_deleted=False,
+            )
+            .select_related('shop', 'shop__owner', 'category')
+            .prefetch_related('images')
+            .order_by('-created_at')
+        )
+
+    def list(self, request, *args, **kwargs):
+        # Safety check: if user has no shop, return empty list
+        if not hasattr(request.user, 'shop'):
+            return Response([], status=status.HTTP_200_OK)
+        
+        # Support pagination if enabled
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Check if pagination is configured
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
 
 class ShopListingDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -301,9 +365,9 @@ class BookmarkListingView(APIView):
 
 class ShopCreateWithApprovalView(generics.CreateAPIView):
     """
-    Create a shop with documents for admin approval
+    Create a shop — active immediately, no approval required.
     POST /api/shops/create-with-approval/
-    Accepts multipart/form-data (shop fields, business details, document files).
+    Accepts multipart/form-data or JSON.
     """
     serializer_class   = ShopCreateWithApprovalSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -312,7 +376,7 @@ class ShopCreateWithApprovalView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         if hasattr(request.user, 'shop'):
             return Response(
-                {'detail': 'You already have a shop. Use the resubmit endpoint if changes were requested.'},
+                {'detail': 'You already have a shop.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -322,8 +386,8 @@ class ShopCreateWithApprovalView(generics.CreateAPIView):
 
         return Response(
             {
-                'message': 'Shop submitted for approval successfully.',
-                'shop': ShopApprovalStatusSerializer(shop, context={'request': request}).data,
+                'message': 'Shop created successfully.',
+                'shop': ShopSerializer(shop, context={'request': request}).data,
             },
             status=status.HTTP_201_CREATED,
         )
@@ -350,7 +414,11 @@ class MyShopApprovalStatusView(generics.RetrieveAPIView):
                 status=status.HTTP_200_OK,
             )
         serializer = self.get_serializer(instance)
-        return Response({'has_shop': True, 'shop': serializer.data})
+        return Response({
+            'has_shop': True,
+            'is_ready': instance.is_active,
+            'shop': serializer.data,
+        })
 
 
 class UploadShopDocumentView(generics.CreateAPIView):

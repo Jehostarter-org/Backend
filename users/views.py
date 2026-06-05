@@ -40,6 +40,7 @@ class RegisterView(generics.CreateAPIView):
     queryset = User.objects.all()
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -97,17 +98,20 @@ class ResendVerificationEmailView(APIView):
 class LoginView(TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
 
 class AdminRegisterView(generics.CreateAPIView):
     queryset           = User.objects.all()
     serializer_class   = AdminRegisterSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
 
 class AdminLoginView(TokenObtainPairView):
     serializer_class   = AdminTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
 
 class AdminMeView(generics.RetrieveAPIView):
@@ -252,11 +256,13 @@ class PublicProfileView(generics.RetrieveAPIView):
     queryset           = User.objects.filter(is_active=True)
     serializer_class   = UserProfileSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
     lookup_field       = 'username'
 
 
 class GoogleAuthView(APIView):
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         credential = request.data.get('credential')
@@ -355,3 +361,15 @@ def update_location(request):
         return Response({'status': 'location updated'})
     except Exception as e:
         return Response({'error': str(e)}, status=400)
+
+
+class AdminUserListView(generics.ListAPIView):
+    queryset = User.objects.all().order_by('-date_joined')
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsStaffUser]
+
+
+class AdminUserDetailView(generics.RetrieveAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserProfileSerializer
+    permission_classes = [IsStaffUser]

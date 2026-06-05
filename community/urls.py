@@ -1,6 +1,6 @@
 from django.urls import path
 from .views import (
-    CommunityListCreateView, CommunityDetailView,
+    CommunityListCreateView, MyCommunitiesListView, CommunityDetailView,
     JoinCommunityView, LeaveCommunityView, CommunityMembersView,
     RemoveMemberView,
     GenerateInviteLinkView, InviteByEmailView, AcceptInviteView,
@@ -11,6 +11,7 @@ from .views import (
 
 urlpatterns = [
     path('',                         CommunityListCreateView.as_view(),     name='communities'),
+    path('mine/',                    MyCommunitiesListView.as_view(),       name='my_communities'),
     path('feed/',                    MyCommunityFeedView.as_view(),         name='community_feed'),
 
     # ── Invite (no community PK prefix — token is globally unique) ───────────

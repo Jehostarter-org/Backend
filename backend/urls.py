@@ -8,6 +8,7 @@ import custom_admin  # noqa: F401 — superuser-friendly admin + site branding
 from strawberry.django.views import AsyncGraphQLView
 from schema.schema import schema
 from users.views import VerifyEmailView, ResendVerificationEmailView
+from users.location_search_view import LocationSearchView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -20,14 +21,16 @@ urlpatterns = [
 
     # ── REST API ──────────────────────────────────────────────────────────────
     # Email verification (registered here so they are always available)
-    path('api/users/verify-email/', VerifyEmailView.as_view(), name='verify_email'),
-    path('api/users/resend-verification/', ResendVerificationEmailView.as_view(), name='resend_verification'),
-    path('api/users/',         include('users.urls')),
-    path('api/memberships/',   include('memberships.urls')),
-    path('api/shops/',         include('shops.urls')),
-    path('api/services/',      include('services.urls')),
-    path('api/community/',     include('community.urls')),
-    path('api/notifications/', include('notifications.urls')),
+    path('api/users/verify-email/',        VerifyEmailView.as_view(),               name='verify_email'),
+    path('api/users/resend-verification/', ResendVerificationEmailView.as_view(),    name='resend_verification'),
+    path('api/location-search/',           LocationSearchView.as_view(),             name='location_search'),
+    path('api/users/',                     include('users.urls')),
+    path('api/memberships/',               include('memberships.urls')),
+    path('api/shops/',                     include('shops.urls')),
+    path('api/services/',                  include('services.urls')),
+    path('api/community/',                 include('community.urls')),
+    path('api/notifications/',             include('notifications.urls')),
+    path('api/messaging/',                 include('messaging.urls', namespace='messaging')),  # ← NEW
 ]
 
 # Serve media and static files in development

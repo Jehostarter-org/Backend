@@ -3,6 +3,7 @@ from django.contrib import admin
 from django.contrib.gis import admin as gis_admin
 from django.contrib.gis.db import models as gis_models
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.urls import reverse
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -184,7 +185,7 @@ class ShopListingAdmin(admin.ModelAdmin):
                 remaining = (obj.boost_expires_at - timezone.now()).days
                 return format_html('<span style="color: green;">Active ({}d left)</span>', remaining)
             else:
-                return format_html('<span style="color: red;">Expired</span>')
+                return mark_safe('<span style="color: red;">Expired</span>')
         return '-'
     boost_status.short_description = 'Boost Status'
     
@@ -292,8 +293,8 @@ class BoostRequestAdmin(admin.ModelAdmin):
     
     def approved_status(self, obj):
         if obj.approved:
-            return format_html('<span style="color: green; font-weight: bold;">✓ Approved</span>')
-        return format_html('<span style="color: orange; font-weight: bold;">⏳ Pending</span>')
+            return mark_safe('<span style="color: green; font-weight: bold;">✓ Approved</span>')
+        return mark_safe('<span style="color: orange; font-weight: bold;">⏳ Pending</span>')
     approved_status.short_description = 'Status'
     
     def approved_by_info(self, obj):

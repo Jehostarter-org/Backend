@@ -19,6 +19,9 @@ ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv(), default='localhost,127.0.0.1
 ADMIN_REGISTRATION_SECRET = config('ADMIN_REGISTRATION_SECRET', default='').strip()
 
 INSTALLED_APPS = [
+    # ── Daphne MUST be first ───────────────────────────────────────────────────
+    'daphne',                # MUST be first - enables ASGI for runserver
+    
     # ── Django Core ───────────────────────────────────────────────────────────
     'django.contrib.admin',
     'django.contrib.auth',
@@ -46,8 +49,8 @@ INSTALLED_APPS = [
     'community',
     'notifications',
     'portal',
+    'messaging',
 ]
-
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',         # must be first
     'django.middleware.security.SecurityMiddleware',
@@ -85,7 +88,7 @@ DATABASES = {
         'NAME': 'jehostarter',
         'USER': 'postgres',
         'PASSWORD': 'Benjamin*247',
-        'HOST': 'localhost',
+        'HOST': '127.0.0.1',
         'PORT': '5432',
     }
 }
@@ -270,3 +273,4 @@ COUNTRY_CURRENCY_MAP = {
     'US': 'USD', 'CA': 'CAD', 'AU': 'AUD',
 }
 SUPPORTED_COUNTRIES = list(COUNTRY_CURRENCY_MAP.keys())
+GRAPH_HOPPER_API_KEY = os.environ.get('GRAPH_HOPPER_API_KEY', '')

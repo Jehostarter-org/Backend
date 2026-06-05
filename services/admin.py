@@ -1,6 +1,7 @@
 # admin.py (add to your existing admin.py file)
 from django.contrib import admin
 from django.utils.html import format_html
+from django.utils.safestring import mark_safe
 from django.urls import reverse
 from django.utils import timezone
 from django.db.models import Count, Q
@@ -96,7 +97,7 @@ class ServiceRequestAdmin(admin.ModelAdmin):
                 obj.provider.get_full_name() or obj.provider.username,
                 obj.provider.email
             )
-        return format_html('<span style="color: gray;">Not assigned</span>')
+        return mark_safe('<span style="color: gray;">Not assigned</span>')
     provider_info.short_description = 'Provider'
     
     def location_display(self, obj):
@@ -137,10 +138,7 @@ class ServiceRequestAdmin(admin.ModelAdmin):
     status_badge.short_description = 'Status'
     
     def has_review(self, obj):
-        has_review = hasattr(obj, 'review')
-        if has_review:
-            return format_html('<span style="color: green;">✓</span>')
-        return format_html('<span style="color: gray;">✗</span>')
+        return hasattr(obj, 'review')
     has_review.boolean = True
     has_review.short_description = 'Reviewed'
     
@@ -217,7 +215,7 @@ class AirportPickupAdmin(admin.ModelAdmin):
                 obj.driver.get_full_name() or obj.driver.username,
                 obj.driver.email
             )
-        return format_html('<span style="color: gray;">Not assigned</span>')
+        return mark_safe('<span style="color: gray;">Not assigned</span>')
     driver_info.short_description = 'Driver'
     
     def status_badge(self, obj):

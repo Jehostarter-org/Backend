@@ -51,6 +51,7 @@ class ShopListingSerializer(serializers.ModelSerializer):
     images        = ListingImageSerializer(many=True, read_only=True)
     shop          = ShopBriefSerializer(read_only=True)
     shop_id       = serializers.ReadOnlyField(source='shop.id')
+    seller_id     = serializers.ReadOnlyField(source='shop.owner.id')
     category      = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
     category_name = serializers.ReadOnlyField(source='category.name')
     category_slug = serializers.ReadOnlyField(source='category.slug')
@@ -59,12 +60,12 @@ class ShopListingSerializer(serializers.ModelSerializer):
     class Meta:
         model  = ShopListing
         fields = [
-            'id', 'shop', 'shop_id', 'category', 'category_name', 'category_slug',
+            'id', 'shop', 'shop_id', 'seller_id', 'category', 'category_name', 'category_slug',
             'title', 'description', 'price', 'currency',
             'listing_type', 'condition', 'is_boosted',
             'is_available', 'images', 'created_at',
         ]
-        read_only_fields = ['id', 'shop', 'shop_id', 'is_boosted', 'created_at']
+        read_only_fields = ['id', 'shop', 'shop_id', 'seller_id', 'is_boosted', 'created_at']
 
     def create(self, validated_data):
         request = self.context.get('request')
@@ -172,133 +173,44 @@ class ShopApprovalRequestSerializer(serializers.ModelSerializer):
 
 class ShopCreateWithApprovalSerializer(serializers.ModelSerializer):
     """
-    Accepts either:
-      • multipart/form-data with flat business_* fields + repeated `documents` files
-      • JSON with nested `approval_request` object (documents must still be uploaded separately)
+    Creates a shop that is immediately active — no approval workflow required.
+    Accepts multipart/form-data or JSON.
     """
-    APPROVAL_FIELDS = (
-        'business_name', 'registration_number', 'tax_number', 'business_address',
-        'business_phone', 'business_email', 'business_description',
-        'years_in_business', 'employee_count',
-    )
-
-    approval_request = ShopApprovalRequestSerializer(required=False, write_only=True)
-
-    # Flat fields for FormData clients (write-only; merged into approval_request in validate)
-    business_name        = serializers.CharField(write_only=True, required=False)
-    registration_number  = serializers.CharField(write_only=True, required=False, allow_blank=True, default='')
-    tax_number           = serializers.CharField(write_only=True, required=False, allow_blank=True, default='')
-    business_address     = serializers.CharField(write_only=True, required=False)
-    business_phone       = serializers.CharField(write_only=True, required=False)
-    business_email       = serializers.EmailField(write_only=True, required=False)
-    business_description = serializers.CharField(write_only=True, required=False, allow_blank=True, default='')
-    years_in_business    = serializers.IntegerField(write_only=True, required=False, default=0, min_value=0)
-    employee_count       = serializers.IntegerField(write_only=True, required=False, default=1, min_value=1)
-
-    documents = serializers.ListField(
-        child=serializers.FileField(),
-        write_only=True,
-        required=False,
-        help_text="Upload at least 2 documents for verification",
-    )
-    document_types = serializers.ListField(
-        child=serializers.ChoiceField(choices=ShopDocument.DOCUMENT_TYPES),
-        write_only=True,
-        required=False,
-    )
 
     class Meta:
         model = Shop
         fields = [
             'id', 'name', 'description', 'city', 'state_province',
             'whatsapp', 'website', 'logo', 'banner',
-            'approval_request',
-            'business_name', 'registration_number', 'tax_number', 'business_address',
-            'business_phone', 'business_email', 'business_description',
-            'years_in_business', 'employee_count',
-            'documents', 'document_types',
         ]
         read_only_fields = ['id']
 
-    def _documents_from_request(self):
-        request = self.context.get('request')
-        if not request:
-            return []
-        return request.FILES.getlist('documents')
-
-    def validate(self, attrs):
-        approval_data = attrs.pop('approval_request', None) or {}
-
-        for field in self.APPROVAL_FIELDS:
-            if field in attrs:
-                approval_data[field] = attrs.pop(field)
-
-        required = ['business_name', 'business_address', 'business_phone', 'business_email']
-        missing = [f for f in required if not approval_data.get(f)]
-        if missing:
-            raise serializers.ValidationError({
-                field: 'This field is required.' for field in missing
-            })
-
-        documents = attrs.get('documents') or self._documents_from_request()
-        if len(documents) < 2:
-            raise serializers.ValidationError({
-                'documents': 'Please upload at least 2 documents for verification.',
-            })
-
-        attrs['approval_request'] = approval_data
-        attrs['documents'] = documents
-        return attrs
-
     def create(self, validated_data):
-        approval_data = validated_data.pop('approval_request')
-        documents = validated_data.pop('documents')
-        document_types = validated_data.pop('document_types', None)
         user = self.context['request'].user
-
-        shop = Shop.objects.create(
+        return Shop.objects.create(
             owner=user,
             country_code=user.current_country,
             currency=settings.COUNTRY_CURRENCY_MAP.get(user.current_country, 'USD'),
             location=user.location,
-            is_active=False,
+            is_active=True,   # immediately active — no review needed
             **validated_data
         )
-
-        approval_request = ShopApprovalRequest.objects.create(
-            shop=shop,
-            status='draft',
-            **approval_data
-        )
-
-        default_types = [choice[0] for choice in ShopDocument.DOCUMENT_TYPES]
-        for index, doc_file in enumerate(documents):
-            if document_types and index < len(document_types):
-                doc_type = document_types[index]
-            else:
-                doc_type = default_types[index % len(default_types)]
-
-            ShopDocument.objects.create(
-                shop=shop,
-                document_type=doc_type,
-                document_file=doc_file,
-                document_name=doc_file.name,
-            )
-
-        approval_request.submit_for_approval()
-        return shop
 
 
 class ShopApprovalStatusSerializer(serializers.ModelSerializer):
     approval_request = ShopApprovalRequestSerializer(read_only=True)
     documents_status = serializers.SerializerMethodField()
-    
+    is_ready = serializers.SerializerMethodField()
+
     class Meta:
         model = Shop
         fields = [
-            'id', 'name', 'is_active', 'created_at',
-            'approval_request', 'documents_status'
+            'id', 'name', 'is_active', 'is_ready', 'created_at',
+            'approval_request', 'documents_status',
         ]
+
+    def get_is_ready(self, obj):
+        return obj.is_active
     
     def get_documents_status(self, obj):
         documents = obj.documents.all()
