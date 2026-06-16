@@ -6,7 +6,7 @@ from .views import (
     AcceptTermsView, ChangePasswordView, DeleteAccountView,
     PublicProfileView, GoogleAuthView,
     AdminRegisterView, AdminLoginView, AdminMeView,
-    AdminUserListView, AdminUserDetailView,
+    AdminUserListView, AdminUserDetailView, ForgotPasswordView, ResetPasswordView,
 )
 from .location_view import UpdateLocationView, DetectLocationView
 
@@ -26,6 +26,8 @@ urlpatterns = [
     path('accept-terms/',    AcceptTermsView.as_view(),    name='accept_terms'),
     path('change-password/', ChangePasswordView.as_view(), name='change_password'),
     path('delete-account/',  DeleteAccountView.as_view(),  name='delete_account'),
+    path('forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
+    path('reset-password/',  ResetPasswordView.as_view(),  name='reset_password'),
 
     path('location/',         UpdateLocationView.as_view(),  name='update_location'),
     path('location/detect/',  DetectLocationView.as_view(),  name='detect_location'),

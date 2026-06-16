@@ -49,11 +49,14 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
     job_application_details = JobApplicationAssistanceSerializer(required=False)
 
     provider_name = serializers.SerializerMethodField()
+    requester_name = serializers.SerializerMethodField()
+    driver_details = serializers.SerializerMethodField()
+    review = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
         fields = [
-            'id', 'requester', 'provider', 'provider_name', 'service_type',
+            'id', 'requester', 'provider', 'provider_name', 'requester_name', 'service_type',
             'description', 'country_code', 'city', 'scheduled_at', 'status',
             'price', 'currency', 'notes', 'created_at', 'updated_at',
             'pickup_address', 'pickup_latitude', 'pickup_longitude',
@@ -63,6 +66,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             'distance_calculation_method',
             'airport_pickup_details', 'home_inspection_details',
             'chaperone_details', 'job_application_details',
+            'driver_details', 'review',
         ]
         read_only_fields = [
             'id', 'requester', 'provider', 'created_at', 'updated_at',
@@ -71,6 +75,55 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             'distance_calculation_method',
         ]
 
+
+
+    def get_driver_details(self, obj):
+        """Return driver profile info when a provider is assigned."""
+        if not obj.provider or obj.status not in ('accepted', 'in_progress', 'completed'):
+            return None
+        profile = ServiceProviderProfile.objects.filter(
+            user=obj.provider,
+            service_type=obj.service_type,
+        ).first()
+        if not profile:
+            return None
+        user = profile.user
+        photo = None
+        if profile.profile_photo:
+            photo = profile.profile_photo.url if hasattr(profile.profile_photo, 'url') else str(profile.profile_photo)
+        front = None
+        if profile.front_view_picture:
+            front = profile.front_view_picture.url if hasattr(profile.front_view_picture, 'url') else str(profile.front_view_picture)
+        return {
+            'full_name': (profile.first_name + ' ' + profile.last_name).strip() or user.get_full_name() or user.username,
+            'profile_photo': photo,
+            'vehicle_display': (str(profile.vehicle_year or '') + ' ' + str(profile.vehicle_model or '')).strip(),
+            'vehicle_colour': profile.vehicle_colour or '',
+            'vehicle_model': profile.vehicle_model or '',
+            'license_plate_number': profile.license_plate_number or '',
+            'front_view_picture': front,
+            'rating': float(profile.rating),
+            'total_trips': profile.total_trips,
+        }
+    def get_review(self, obj):
+        try:
+            review = obj.review
+        except Exception:
+            return None
+        if not review:
+            return None
+        return {
+            id: str(review.id),
+            rating: review.rating,
+            comment: review.comment or chr(34)+chr(34),
+            created_at: review.created_at.isoformat() if review.created_at else None,
+        }
+
+    def get_requester_name(self, obj):
+        if obj.requester:
+            return obj.requester.get_full_name() or obj.requester.username
+        return None
+
     def get_provider_name(self, obj):
         if obj.provider and obj.service_type == 'airport_pickup':
             profile = ServiceProviderProfile.objects.filter(
@@ -78,7 +131,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
                 service_type='airport_pickup',
             ).first()
             if profile:
-                return profile.full_name
+                return (profile.first_name + chr(32) + profile.last_name).strip()
             return obj.provider.get_full_name() or obj.provider.username
         if obj.provider:
             return obj.provider.get_full_name() or obj.provider.username
@@ -136,7 +189,7 @@ class ServiceProviderProfileSerializer(serializers.ModelSerializer):
             'full_name',
         ]
         read_only_fields = [
-            'id', 'user', 'registered_at', 'total_trips', 'rating',
+            'id', 'user', 'is_active', 'registered_at', 'total_trips', 'rating',
             'total_reviews',
         ]
 

@@ -2,6 +2,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
+from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.utils import timezone
 from django.conf import settings as django_settings
@@ -388,6 +389,7 @@ def get_driver_vehicle_details(driver_user):
 # ── Available Services Pool ──────────────────────────────────────────────────
 
 class AvailableServicesView(generics.ListAPIView):
+    pagination_class = None
     serializer_class = ServiceRequestSerializer
 
     def get_queryset(self):
@@ -526,7 +528,7 @@ class ServiceProviderProfileListCreateView(generics.ListCreateAPIView):
         return ServiceProviderProfile.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        serializer.save(user=self.request.user, is_active=True)
 
 
 class ServiceProviderProfileDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -834,4 +836,100 @@ class PropertySearchView(APIView):
             'total': total,
             'page': page,
             'totalPages': (total + page_size - 1) // page_size,
+        }, status=status.HTTP_200_OK)
+
+class BroadcastServiceView(APIView):
+    """
+    POST /api/services/<pk>/broadcast/
+
+    Rider calls this after confirming vehicle on the direction page.
+    Broadcasts the job to all drivers in the area via WebSocket and
+    creates a Notification record for each driver so they see it in
+    their notification centre even if offline.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        sr = get_object_or_404(ServiceRequest, pk=pk, requester=request.user)
+
+        if sr.status != 'pending':
+            return Response(
+                {'detail': f'Service is already {sr.status}.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ── 1. WebSocket broadcast to driver groups ───────────────────────
+        group = (
+            f'available_services_{sr.country_code}'
+            f'_{sr.city.lower() if sr.city else ""}_{sr.service_type}'
+        )
+        _broadcast(group, 'new_service_request', {
+            'service_id': sr.id,
+            'service_type': sr.service_type,
+            'country_code': sr.country_code,
+            'city': sr.city,
+            'description': sr.description,
+            'price': str(sr.price) if sr.price else None,
+            'currency': sr.currency,
+            'airport': sr.airport_pickup_details.airport if sr.airport_pickup_details else None,
+            'created_at': sr.created_at.isoformat() if sr.created_at else None,
+        })
+
+        # ── 2. Persist a Notification for every driver in the area ────────
+        from notifications.models import Notification
+        from services.models import ServiceProviderProfile
+
+        drivers = (
+            ServiceProviderProfile.objects
+            .filter(
+                country_code=sr.country_code,
+                service_type=sr.service_type,
+                is_active=True,
+            )
+            .exclude(user=sr.requester)
+            .select_related('user')
+        )
+
+        notif_link = f'/dashboard/airport-pickup/drivers-airport-pickup/drivers-pickup'
+        notif_title = 'New Airport Pickup Request'
+        notif_msg = (
+            f'A passenger needs a ride from '
+            f'{sr.airport_pickup_details.airport if sr.airport_pickup_details else sr.description} '
+            f'to {sr.notes or "destination"}.'
+        )
+
+        created = 0
+        for profile in drivers:
+            Notification.objects.create(
+                recipient=profile.user,
+                actor=request.user,
+                notification_type='system',
+                title=notif_title,
+                message=notif_msg,
+                link=notif_link,
+            )
+            # Also push real-time via the user notification WebSocket
+            try:
+                from asgiref.sync import async_to_sync
+                from channels.layers import get_channel_layer
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    async_to_sync(channel_layer.group_send)(
+                        f'user_notifications_{profile.user.id}',
+                        {
+                            'type': 'new_notification',
+                            'payload': {
+                                'title': notif_title,
+                                'message': notif_msg,
+                                'link': notif_link,
+                            },
+                        }
+                    )
+            except Exception:
+                pass  # non-critical
+            created += 1
+
+        return Response({
+            'detail': f'Job broadcast to {created} driver(s).',
+            'drivers_notified': created,
         }, status=status.HTTP_200_OK)

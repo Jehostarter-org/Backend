@@ -22,6 +22,7 @@ from .views import (
     UpdateServiceRequestDistanceView,
     TrackDriverLocationView,
     UpdateTripStatusView,
+    BroadcastServiceView,
     # Add property views
     PropertyListCreateView,
     PropertyDetailView,
@@ -84,5 +85,6 @@ urlpatterns = [
 
     # Dynamic routes must come last so static dashboard routes are not treated as IDs.
     path('<str:pk>/claim/', ClaimServiceView.as_view(), name='claim_service'),
+    path('<str:pk>/broadcast/', BroadcastServiceView.as_view(), name='broadcast_service'),
     path('<str:pk>/', ServiceRequestDetailView.as_view(), name='service_detail'),
 ]

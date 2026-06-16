@@ -126,3 +126,32 @@ class EmailVerificationCode(models.Model):
 
     def __str__(self):
         return f'OTP for {self.user.email} (expires {self.expires_at})'
+
+
+class PasswordResetToken(models.Model):
+    """Token emailed to the user when they request a password reset."""
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='password_reset_tokens',
+    )
+    token_hash = models.CharField(max_length=128, unique=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'password_reset_tokens'
+        ordering = ['-created_at']
+
+    @property
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+    @property
+    def is_used(self):
+        return self.used_at is not None
+
+    def __str__(self):
+        return f'Password reset for {self.user.email} (expires {self.expires_at})'

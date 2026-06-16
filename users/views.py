@@ -373,3 +373,90 @@ class AdminUserDetailView(generics.RetrieveAPIView):
     queryset = User.objects.all()
     serializer_class = UserProfileSerializer
     permission_classes = [IsStaffUser]
+
+# ── Forgot / Reset Password ───────────────────────────────────────────────────
+
+from .serializers import ForgotPasswordSerializer, ResetPasswordSerializer
+from .password_reset import send_password_reset_email, verify_reset_token, mark_token_used
+
+
+class ForgotPasswordView(APIView):
+    """
+    POST /api/users/forgot-password/
+
+    Accepts an email. If the email is registered, sends a reset link.
+    Always returns 200 to prevent email enumeration.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = ForgotPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        email = serializer.validated_data['email']
+
+        # Always return success — never reveal whether the email exists.
+        user = (
+            User.objects
+            .filter(email__iexact=email, is_active=True)
+            .first()
+        )
+
+        if user is not None:
+            try:
+                send_password_reset_email(user)
+            except Exception as exc:
+                import logging
+                logging.getLogger(__name__).error(
+                    'Failed to send password reset email to %s: %s', email, exc,
+                )
+                # Still return 200 — we don't want to leak info.
+
+        return Response(
+            {
+                'detail': (
+                    'If an account exists with that email address, '
+                    'you will receive a password reset link shortly.'
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ResetPasswordView(APIView):
+    """
+    POST /api/users/reset-password/
+
+    Accepts a token + new_password. Verifies the token,
+    hashes the new password with Argon2 (Django default),
+    and marks the token as used.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        serializer = ResetPasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        token = serializer.validated_data['token']
+        new_password = serializer.validated_data['new_password']
+
+        user, error = verify_reset_token(token)
+        if error:
+            return Response(
+                {'detail': error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # set_password uses Django's PASSWORD_HASHERS — Argon2 is first.
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+
+        # Mark the token as used
+        mark_token_used(token)
+
+        return Response(
+            {'detail': 'Password has been reset successfully. You can now log in.'},
+            status=status.HTTP_200_OK,
+        )

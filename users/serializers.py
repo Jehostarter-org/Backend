@@ -340,3 +340,21 @@ class UserUpdateSerializer(serializers.ModelSerializer):
 
     def validate_destination_country(self, value):
         return self._validate_country(value)
+
+# ── Forgot / Reset Password ───────────────────────────────────────────────────
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    email = serializers.EmailField()
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=128)
+    new_password = serializers.CharField(min_length=8, max_length=128)
+
+    def validate_new_password(self, value):
+        if len(value) < 8:
+            raise serializers.ValidationError('Password must be at least 8 characters.')
+        return value
