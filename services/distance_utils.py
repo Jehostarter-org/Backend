@@ -5,294 +5,362 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-# OSRM public instance (free, no API key needed)
-# Rate limited but good for moderate usage
-OSRM_BASE_URL = "http://router.project-osrm.org"
+# OpenRouteService (ORS) — free tier: 2,000 requests/day
+# Sign up at https://openrouteservice.org/dev/#/home to get your key
+# Add ORS_API_KEY to your .env and settings.py
+ORS_BASE_URL = "https://api.openrouteservice.org"
+ORS_API_KEY = getattr(settings, 'ORS_API_KEY', None)
 
-# Fallback: GraphHopper (requires free API key but more reliable)
-# Sign up at https://www.graphhopper.com/ for a free API key (1000 requests/day)
-GRAPH_HOPPER_BASE_URL = "https://graphhopper.com/api/1"
-GRAPH_HOPPER_API_KEY = getattr(settings, 'GRAPH_HOPPER_API_KEY', None)
+# Nominatim (OpenStreetMap geocoder) — free, no API key needed
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
+# Required by Nominatim ToS — replace with your app name and contact email
+NOMINATIM_USER_AGENT = getattr(
+    settings,
+    'NOMINATIM_USER_AGENT',
+    'Jehostarter/1.0 (contact@jehostarter.com)'
+)
 
 
 def get_coordinates_from_address(address, city, country_code):
     """
-    Geocode an address to coordinates using Nominatim (OpenStreetMap's geocoder)
-    Returns (lat, lon) or None if not found
+    Geocode an address to (lat, lon) using OpenRouteService Pelias geocoder.
+    Falls back to Nominatim if ORS key is unavailable.
+    city is optional — geocoding works with just address + country.
+    Returns (lat, lon) or None if not found.
     """
+    # Build query string — filter out empty parts to avoid double commas
+    query_parts = [p for p in [address, city, country_code] if p]
+    full_query = ", ".join(query_parts)
+
+    # ── Try ORS geocoding first (more accurate, structured) ──────────────
+    if ORS_API_KEY:
+        try:
+            url = f"{ORS_BASE_URL}/geocode/search"
+            response = requests.get(
+                url,
+                params={
+                    "api_key": ORS_API_KEY,
+                    "text": full_query,
+                    "size": 1,
+                },
+                timeout=10,
+            )
+            if response.status_code == 200:
+                features = response.json().get("features", [])
+                if features:
+                    lon, lat = features[0]["geometry"]["coordinates"]
+                    return float(lat), float(lon)
+            else:
+                logger.warning("ORS geocoding failed (%s): %s", response.status_code, response.text)
+        except Exception as exc:
+            logger.error("ORS geocoding error: %s", exc)
+
+    # ── Fallback: Nominatim ───────────────────────────────────────────────
     try:
-        # Build full address string
-        full_address = f"{address}, {city}, {country_code}"
-        
-        # Nominatim API (free, requires User-Agent)
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            'q': full_address,
-            'format': 'json',
-            'limit': 1,
-        }
-        headers = {
-            'User-Agent': 'YourAppName/1.0 (your-email@example.com)'
-        }
-        
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        
+        response = requests.get(
+            NOMINATIM_URL,
+            params={"q": full_query, "format": "json", "limit": 1},
+            headers={"User-Agent": NOMINATIM_USER_AGENT},
+            timeout=10,
+        )
         if response.status_code == 200:
             data = response.json()
             if data:
-                lat = float(data[0]['lat'])
-                lon = float(data[0]['lon'])
-                return lat, lon
+                return float(data[0]["lat"]), float(data[0]["lon"])
         else:
-            logger.warning(f"Geocoding failed for {full_address}: {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"Geocoding error: {str(e)}")
-    
+            logger.warning("Nominatim geocoding failed (%s) for: %s", response.status_code, full_query)
+    except Exception as exc:
+        logger.error("Nominatim geocoding error: %s", exc)
+
     return None
 
 
 def geocode_airport(airport_name, city, country_code):
     """
-    Special geocoding for airports
-    Returns (lat, lon) or None if not found
+    Geocode an airport to (lat, lon).
+    Tries ORS first, falls back to Nominatim.
+    Returns (lat, lon) or None if not found.
     """
+    query = f"{airport_name} Airport, {city}, {country_code}"
+
+    # ── Try ORS ──────────────────────────────────────────────────────────
+    if ORS_API_KEY:
+        try:
+            url = f"{ORS_BASE_URL}/geocode/search"
+            response = requests.get(
+                url,
+                params={
+                    "api_key": ORS_API_KEY,
+                    "text": query,
+                    "size": 1,
+                    "layers": "venue,address",
+                },
+                timeout=10,
+            )
+            if response.status_code == 200:
+                features = response.json().get("features", [])
+                if features:
+                    lon, lat = features[0]["geometry"]["coordinates"]
+                    return float(lat), float(lon)
+        except Exception as exc:
+            logger.error("ORS airport geocoding error: %s", exc)
+
+    # ── Fallback: Nominatim ───────────────────────────────────────────────
     try:
-        # Try with airport-specific query
-        full_address = f"{airport_name} Airport, {city}, {country_code}"
-        
-        url = "https://nominatim.openstreetmap.org/search"
-        params = {
-            'q': full_address,
-            'format': 'json',
-            'limit': 1,
-        }
-        headers = {
-            'User-Agent': 'YourAppName/1.0 (your-email@example.com)'
-        }
-        
-        response = requests.get(url, params=params, headers=headers, timeout=10)
-        
+        response = requests.get(
+            NOMINATIM_URL,
+            params={"q": query, "format": "json", "limit": 1},
+            headers={"User-Agent": NOMINATIM_USER_AGENT},
+            timeout=10,
+        )
         if response.status_code == 200:
             data = response.json()
             if data:
-                lat = float(data[0]['lat'])
-                lon = float(data[0]['lon'])
-                return lat, lon
-    except Exception as e:
-        logger.error(f"Airport geocoding error: {str(e)}")
-    
+                return float(data[0]["lat"]), float(data[0]["lon"])
+    except Exception as exc:
+        logger.error("Nominatim airport geocoding error: %s", exc)
+
     return None
 
 
 def calculate_distance_osrm(start_coords, end_coords):
     """
-    Calculate driving distance between two coordinates using OSRM
-    Returns distance in kilometers, duration in seconds
+    Calculate driving distance and duration using OpenRouteService Directions API.
+    Function name kept as-is so views.py requires no changes.
+    Returns dict with distance_km, duration_min, duration_sec — or None on failure.
     """
+    if not ORS_API_KEY:
+        logger.warning("ORS_API_KEY not set — skipping ORS routing")
+        return None
+
     try:
-        # Format coordinates for OSRM: lon,lat;lon,lat
-        coordinates = f"{start_coords[1]},{start_coords[0]};{end_coords[1]},{end_coords[0]}"
-        url = f"{OSRM_BASE_URL}/route/v1/driving/{coordinates}"
-        params = {
-            'overview': 'false',
-            'steps': 'false'
+        url = f"{ORS_BASE_URL}/v2/directions/driving-car"
+        # ORS expects [longitude, latitude] order
+        payload = {
+            "coordinates": [
+                [start_coords[1], start_coords[0]],
+                [end_coords[1], end_coords[0]],
+            ]
         }
-        
-        response = requests.get(url, params=params, timeout=10)
-        
+        headers = {
+            "Authorization": ORS_API_KEY,
+            "Content-Type": "application/json",
+        }
+
+        response = requests.post(url, json=payload, headers=headers, timeout=10)
+
         if response.status_code == 200:
             data = response.json()
-            if data.get('code') == 'Ok' and data.get('routes'):
-                route = data['routes'][0]
-                distance_km = route['distance'] / 1000  # Convert meters to km
-                duration_sec = route['duration']
-                
+            routes = data.get("routes", [])
+            if routes:
+                summary = routes[0]["summary"]
+                distance_km = summary["distance"] / 1000  # metres → km
+                duration_sec = summary["duration"]
                 return {
-                    'distance_km': round(distance_km, 2),
-                    'duration_min': round(duration_sec / 60, 2),
-                    'duration_sec': duration_sec
+                    "distance_km": round(distance_km, 2),
+                    "duration_min": round(duration_sec / 60, 2),
+                    "duration_sec": duration_sec,
                 }
         else:
-            logger.warning(f"OSRM failed: {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"OSRM error: {str(e)}")
-    
+            logger.warning("ORS directions failed (%s): %s", response.status_code, response.text)
+
+    except Exception as exc:
+        logger.error("ORS directions error: %s", exc)
+
     return None
 
 
+GRAPH_HOPPER_BASE = "https://graphhopper.com/api/1"
+
 def calculate_distance_graphhopper(start_coords, end_coords):
     """
-    Calculate driving distance using GraphHopper (requires API key)
-    Returns distance in kilometers, duration in seconds
+    Calculate driving distance using GraphHopper Routing API.
+    Used as fallback when ORS routing fails or has no key.
+    Returns dict with distance_km, duration_min, duration_sec — or None on failure.
     """
-    if not GRAPH_HOPPER_API_KEY:
+    gh_key = getattr(settings, 'GRAPH_HOPPER_API_KEY', None)
+    if not gh_key:
+        logger.warning("GRAPH_HOPPER_API_KEY not set — skipping GraphHopper routing")
         return None
-    
+
     try:
-        url = f"{GRAPH_HOPPER_BASE_URL}/route"
+        url = f"{GRAPH_HOPPER_BASE}/route"
+        # GraphHopper expects [lat, lon] order
         params = {
-            'point': [f"{start_coords[0]},{start_coords[1]}", f"{end_coords[0]},{end_coords[1]}"],
-            'vehicle': 'car',
-            'key': GRAPH_HOPPER_API_KEY,
-            'locale': 'en',
-            'points_encoded': 'false',
-            'calc_points': 'false'
+            "point": [f"{start_coords[0]},{start_coords[1]}", f"{end_coords[0]},{end_coords[1]}"],
+            "vehicle": "car",
+            "locale": "en",
+            "key": gh_key,
+            "type": "json",
         }
-        
         response = requests.get(url, params=params, timeout=10)
-        
+
         if response.status_code == 200:
             data = response.json()
-            if data.get('paths'):
-                path = data['paths'][0]
-                distance_km = path['distance'] / 1000
-                duration_sec = path['time'] / 1000
-                
+            paths = data.get("paths", [])
+            if paths:
+                distance_km = paths[0]["distance"] / 1000
+                duration_sec = paths[0]["time"] / 1000
                 return {
-                    'distance_km': round(distance_km, 2),
-                    'duration_min': round(duration_sec / 60, 2),
-                    'duration_sec': duration_sec
+                    "distance_km": round(distance_km, 2),
+                    "duration_min": round(duration_sec / 60, 2),
+                    "duration_sec": duration_sec,
                 }
         else:
-            logger.warning(f"GraphHopper failed: {response.status_code}")
-            
-    except Exception as e:
-        logger.error(f"GraphHopper error: {str(e)}")
-    
+            logger.warning("GraphHopper routing failed (%s): %s", response.status_code, response.text)
+
+    except Exception as exc:
+        logger.error("GraphHopper routing error: %s", exc)
+
     return None
 
 
 def haversine_distance(coord1, coord2):
     """
-    Calculate straight-line (great-circle) distance between two coordinates
-    Used as fallback when routing APIs fail
+    Straight-line (great-circle) distance between two (lat, lon) pairs.
+    Used as last-resort fallback when all routing APIs fail.
+    Returns dict with distance_km, duration_min, distance_type.
     """
     lat1, lon1 = coord1
     lat2, lon2 = coord2
-    
-    R = 6371  # Earth's radius in kilometers
-    
-    lat1_rad = radians(lat1)
-    lat2_rad = radians(lat2)
-    delta_lat = radians(lat2 - lat1)
-    delta_lon = radians(lon2 - lon1)
-    
-    a = sin(delta_lat / 2) ** 2 + cos(lat1_rad) * cos(lat2_rad) * sin(delta_lon / 2) ** 2
+
+    R = 6371  # Earth radius in km
+
+    d_lat = radians(lat2 - lat1)
+    d_lon = radians(lon2 - lon1)
+    a = (
+        sin(d_lat / 2) ** 2
+        + cos(radians(lat1)) * cos(radians(lat2)) * sin(d_lon / 2) ** 2
+    )
     c = 2 * atan2(sqrt(a), sqrt(1 - a))
-    
     distance_km = R * c
-    
-    # Rough estimate: average driving speed ~40 km/h in city
-    duration_hours = distance_km / 40
-    duration_min = duration_hours * 60
-    
+
+    # Conservative city-speed estimate: 40 km/h
+    duration_min = (distance_km / 40) * 60
+
     return {
-        'distance_km': round(distance_km, 2),
-        'duration_min': round(duration_min, 2),
-        'distance_type': 'straight_line'
+        "distance_km": round(distance_km, 2),
+        "duration_min": round(duration_min, 2),
+        "distance_type": "straight_line",
     }
 
 
-def calculate_distance_between_addresses(pickup_address, pickup_city, pickup_country,
-                                        arrival_address, arrival_city, arrival_country):
+def calculate_distance_from_coords(pickup_lat, pickup_lon, arrival_lat, arrival_lon):
     """
-    Main function to calculate distance between pickup and arrival points
-    Tries OSRM first, falls back to GraphHopper, then Haversine
+    Calculate driving distance from pre-geocoded coordinates.
+    Used when the frontend already has lat/lon from autocomplete.
+    Falls back to Haversine if ORS routing fails.
+    Returns result dict with distance_km, duration_min, coords, distance_type.
     """
-    # Get coordinates for both addresses
-    pickup_coords = get_coordinates_from_address(pickup_address, pickup_city, pickup_country)
-    arrival_coords = get_coordinates_from_address(arrival_address, arrival_city, arrival_country)
-    
-    if not pickup_coords or not arrival_coords:
-        logger.warning("Could not geocode one or both addresses")
-        return None
-    
-    # Try OSRM first (free, no API key)
+    pickup_coords = (pickup_lat, pickup_lon)
+    arrival_coords = (arrival_lat, arrival_lon)
+
     result = calculate_distance_osrm(pickup_coords, arrival_coords)
-    
-    # If OSRM fails, try GraphHopper if available
-    if not result and GRAPH_HOPPER_API_KEY:
-        result = calculate_distance_graphhopper(pickup_coords, arrival_coords)
-    
-    # If both routing APIs fail, use straight-line distance as fallback
     if not result:
-        logger.info("Using Haversine fallback for distance calculation")
+        result = calculate_distance_graphhopper(pickup_coords, arrival_coords)
+
+    if not result:
+        logger.info("ORS/GraphHopper routing unavailable — using Haversine fallback")
         result = haversine_distance(pickup_coords, arrival_coords)
-        result['distance_type'] = 'straight_line'
+        result["distance_type"] = "straight_line"
     else:
-        result['distance_type'] = 'routing'
-    
-    # Add coordinates to result for debugging
-    result['pickup_coords'] = pickup_coords
-    result['arrival_coords'] = arrival_coords
-    
+        result["distance_type"] = "routing"
+
+    result["pickup_coords"] = pickup_coords
+    result["arrival_coords"] = arrival_coords
+
     return result
 
 
-def calculate_price_based_on_distance(base_price, distance_km, price_per_km=2.0):
+def calculate_distance_between_addresses(
+    pickup_address, pickup_city, pickup_country,
+    arrival_address, arrival_city, arrival_country,
+):
     """
-    Calculate dynamic pricing based on distance
-    Example: base_price + (distance_km * price_per_km)
+    Main function called by views.py.
+    Geocodes both addresses then calculates driving distance via ORS.
+    Falls back to Haversine if ORS is unavailable or fails.
+    Returns result dict with distance_km, duration_min, pickup_coords,
+    arrival_coords, distance_type — or None if geocoding fails entirely.
     """
-    return round(base_price + (distance_km * price_per_km), 2)
+    pickup_coords = get_coordinates_from_address(pickup_address, pickup_city, pickup_country)
+    arrival_coords = get_coordinates_from_address(arrival_address, arrival_city, arrival_country)
+
+    if not pickup_coords or not arrival_coords:
+        logger.warning("Could not geocode one or both addresses")
+        return None
+
+    # ── Try ORS routing ───────────────────────────────────────────────────
+    result = calculate_distance_osrm(pickup_coords, arrival_coords)
+    if not result:
+        result = calculate_distance_graphhopper(pickup_coords, arrival_coords)
+
+    # ── Haversine fallback ────────────────────────────────────────────────
+    if not result:
+        logger.info("ORS/GraphHopper routing unavailable — using Haversine fallback")
+        result = haversine_distance(pickup_coords, arrival_coords)
+        result["distance_type"] = "straight_line"
+    else:
+        result["distance_type"] = "routing"
+
+    result["pickup_coords"] = pickup_coords
+    result["arrival_coords"] = arrival_coords
+
+    return result
+
+
+def calculate_price_based_on_distance(per_km_rate, distance_km, flag_drop_fee=0, min_fare=0):
+    """
+    Uber/Bolt-style fare:
+      distance_charge = distance_km × per_km_rate
+      total           = flag_drop_fee + distance_charge
+      final           = max(total, min_fare)
+    Returns (total, distance_charge, flag_drop_fee).
+    """
+    distance_charge = round(distance_km * per_km_rate, 2)
+    total = round(flag_drop_fee + distance_charge, 2)
+    if min_fare > 0 and total < min_fare:
+        total = round(float(min_fare), 2)
+    return total, distance_charge, flag_drop_fee
 
 
 def calculate_distance_between_coordinates(lat1, lon1, lat2, lon2):
     """
-    Calculate distance between two coordinates using Haversine formula
-    Useful for quick calculations without API calls
+    Quick Haversine distance between two coordinate pairs.
+    No API call — useful for driver proximity checks.
     """
-    coord1 = (lat1, lon1)
-    coord2 = (lat2, lon2)
-    return haversine_distance(coord1, coord2)
+    return haversine_distance((lat1, lon1), (lat2, lon2))
 
 
 def get_nearest_driver(pickup_lat, pickup_lon, drivers, max_distance_km=50):
     """
-    Find the nearest driver to a pickup location
-    
-    Args:
-        pickup_lat, pickup_lon: Coordinates of pickup location
-        drivers: List of driver objects with lat/lon attributes
-        max_distance_km: Maximum distance to consider
-    
-    Returns:
-        The nearest driver or None if none within max_distance_km
+    Find the nearest active driver to a pickup location.
+    Drivers must have current_lat and current_lon attributes.
+    Returns the nearest driver object or None if none within max_distance_km.
     """
     nearest_driver = None
-    min_distance = float('inf')
-    
+    min_distance = float("inf")
+
     for driver in drivers:
-        if hasattr(driver, 'current_lat') and hasattr(driver, 'current_lon'):
-            distance_data = haversine_distance(
+        if hasattr(driver, "current_lat") and hasattr(driver, "current_lon"):
+            result = haversine_distance(
                 (pickup_lat, pickup_lon),
-                (driver.current_lat, driver.current_lon)
+                (driver.current_lat, driver.current_lon),
             )
-            distance = distance_data['distance_km']
-            
+            distance = result["distance_km"]
             if distance < min_distance and distance <= max_distance_km:
                 min_distance = distance
                 nearest_driver = driver
-    
+
     return nearest_driver
 
 
 def calculate_eta_from_distance(distance_km, traffic_factor=1.0):
     """
-    Calculate ETA based on distance and traffic conditions
-    
-    Args:
-        distance_km: Distance in kilometers
-        traffic_factor: 1.0 = normal, >1.0 = heavy traffic, <1.0 = light traffic
-    
-    Returns:
-        Estimated time in minutes
+    Estimate arrival time in minutes.
+    traffic_factor > 1.0 = heavy traffic, < 1.0 = light traffic.
+    Base assumption: 30 km/h average city speed.
     """
-    # Average speed assumption: 30 km/h in city traffic
-    avg_speed_kmh = 30 * traffic_factor
-    eta_hours = distance_km / avg_speed_kmh
-    eta_minutes = eta_hours * 60
-    
+    avg_speed = 30 / traffic_factor  # slower when traffic_factor > 1
+    eta_minutes = (distance_km / avg_speed) * 60
     return round(eta_minutes, 2)

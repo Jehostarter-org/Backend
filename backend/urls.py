@@ -9,10 +9,15 @@ from strawberry.django.views import AsyncGraphQLView
 from schema.schema import schema
 from users.views import VerifyEmailView, ResendVerificationEmailView
 from users.location_search_view import LocationSearchView
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('portal/', include('portal.urls')),
+
+    # ── API Docs ───────────────────────────────────────────────────────────────
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 
     # ── GraphQL (HTTP — queries + mutations) ──────────────────────────────────
     # csrf_exempt because clients authenticate via Bearer token not CSRF cookie.

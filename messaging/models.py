@@ -22,8 +22,8 @@ class Conversation(models.Model):
         choices=[
             ('airport_pickup',      'Airport Pickup'),
             ('home_inspection',     'Home Inspection'),
-            ('job_application',     'Job Application'),
-            ('chaperon',            'Chaperon'),
+            ('chaperone',           'Chaperone'),
+            ('temporary_housing',   'Temporary Housing'),
             ('migration_specialist','Migration Specialist'),
         ],
         help_text='If this conversation was started from a service, record which one.',

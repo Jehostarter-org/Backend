@@ -2,12 +2,14 @@ from django.urls import path
 from .views import (
     ServiceRequestListCreateView,
     ServiceRequestDetailView,
+    DriverServiceRequestDetailView,
     AvailableServicesView,
     ClaimServiceView,
     MyProviderJobsView,
     UpcomingPickupsView,
     InspectionReportUploadView,
     ReviewServiceView,
+    RatePassengerView,
     ServiceProviderProfileListCreateView,
     ServiceProviderProfileDetailView,
     MigrationSpecialistApplyView,
@@ -30,6 +32,9 @@ from .views import (
     UploadPropertyImageView,
     DeletePropertyImageView,
     PropertySearchView,
+    # Chaperone views
+    AvailableChaperonesView,
+    BroadcastChaperoneServiceView,
 )
 
 urlpatterns = [
@@ -58,6 +63,7 @@ urlpatterns = [
 
     # ── Reviews ───────────────────────────────────────────────────────────────
     path('<str:pk>/review/', ReviewServiceView.as_view(), name='review_service'),
+    path('<str:pk>/rate-passenger/', RatePassengerView.as_view(), name='rate_passenger'),
 
     # ── Vehicle confirmation (saves server-calculated price onto the request) ─
     path('<str:pk>/confirm-vehicle/', ConfirmVehicleView.as_view(), name='confirm_vehicle'),
@@ -83,8 +89,13 @@ urlpatterns = [
     path('properties/<str:pk>/upload-images/', UploadPropertyImageView.as_view(), name='property_upload_images'),
     path('properties/<str:pk>/images/<str:image_id>/', DeletePropertyImageView.as_view(), name='property_delete_image'),
 
+    # ── Chaperone Endpoints ───────────────────────────────────────────────────
+    path('chaperones/available/', AvailableChaperonesView.as_view(), name='available_chaperones'),
+    path('<str:pk>/broadcast-chaperone/', BroadcastChaperoneServiceView.as_view(), name='broadcast_chaperone'),
+
     # Dynamic routes must come last so static dashboard routes are not treated as IDs.
     path('<str:pk>/claim/', ClaimServiceView.as_view(), name='claim_service'),
     path('<str:pk>/broadcast/', BroadcastServiceView.as_view(), name='broadcast_service'),
+    path('<str:pk>/driver-view/', DriverServiceRequestDetailView.as_view(), name='driver_service_detail'),
     path('<str:pk>/', ServiceRequestDetailView.as_view(), name='service_detail'),
 ]

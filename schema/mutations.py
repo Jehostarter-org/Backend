@@ -5,10 +5,11 @@ schema/mutations.py
 import strawberry
 from strawberry.types import Info
 from typing import Optional
-from asgiref.sync import async_to_sync
+from asgiref.sync import async_to_sync, sync_to_async
 from channels.layers import get_channel_layer
 from datetime import datetime, timezone
 from django.conf import settings
+import logging
 
 from .types import (
     UserType,
@@ -38,6 +39,7 @@ def _broadcast(group: str, event_type: str, payload: dict):
 
 
 # ── Input types ───────────────────────────────────────────────────────────────
+
 
 @strawberry.input
 class UpdateProfileInput:

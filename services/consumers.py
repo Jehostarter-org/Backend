@@ -1,10 +1,12 @@
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class AvailableServicesConsumer(AsyncWebsocketConsumer):
@@ -15,27 +17,34 @@ class AvailableServicesConsumer(AsyncWebsocketConsumer):
     """
 
     async def connect(self):
-        token_str = self._get_token()
-        if not token_str:
-            await self.close(code=4001)
-            return
+        try:
+            token_str = self._get_token()
+            if not token_str:
+                logger.warning('[WS Services] no token — closing')
+                await self.close(code=4001)
+                return
 
-        self.user = await self._get_user(token_str)
-        if not self.user:
-            await self.close(code=4001)
-            return
+            self.user = await self._get_user(token_str)
+            if not self.user:
+                logger.warning('[WS Services] invalid token — closing')
+                await self.close(code=4001)
+                return
 
-        # Get all service types this driver is registered for in their city
-        self.groups = await self._get_driver_groups()
-        if not self.groups:
-            await self.close(code=4003)
-            return
+            # Get all service types this driver is registered for in their city
+            self.groups = await self._get_driver_groups()
+            if not self.groups:
+                logger.warning('[WS Services] %s has no active driver profiles — closing', self.user.username)
+                await self.close(code=4003)
+                return
 
-        for group in self.groups:
-            await self.channel_layer.group_add(group, self.channel_name)
+            for group in self.groups:
+                await self.channel_layer.group_add(group, self.channel_name)
 
-        await self.accept()
-        print(f'[WS Services] {self.user.username} connected to {self.groups}')
+            await self.accept()
+            logger.info('[WS Services] %s connected to %s', self.user.username, self.groups)
+        except Exception as e:
+            logger.error('[WS Services] connect error: %s', e, exc_info=True)
+            await self.close(code=4000)
 
     async def disconnect(self, code):
         if hasattr(self, 'groups'):
@@ -76,7 +85,7 @@ class AvailableServicesConsumer(AsyncWebsocketConsumer):
             user_id = data['user_id']
             return User.objects.get(id=user_id)
         except Exception as e:
-            print(f'[WS Services] auth failed: {e}')
+            logger.warning('[WS Services] auth failed: %s', e)
             return None
 
     @database_sync_to_async
@@ -86,7 +95,11 @@ class AvailableServicesConsumer(AsyncWebsocketConsumer):
             user=self.user,
             is_active=True,
         )
-        return [
-            f'available_services_{p.country_code}_{p.city.lower()}_{p.service_type}'
-            for p in profiles
-        ]
+        groups = []
+        for p in profiles:
+            if not p.country_code or not p.city:
+                continue
+            groups.append(
+                f'available_services_{p.country_code}_{p.city.lower()}_{p.service_type}'
+            )
+        return groups

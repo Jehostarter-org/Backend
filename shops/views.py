@@ -14,6 +14,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAdminUser
 from django.shortcuts import get_object_or_404
 
+from django.db.models import Q
 from .models import Shop, Category, ShopListing, BoostRequest, ShopDocument, ShopApprovalRequest, SavedListing
 from .serializers import (
     ShopSerializer, CategorySerializer, ShopListingSerializer,
@@ -45,6 +46,17 @@ class IsListingOwnerOrReadOnly(permissions.BasePermission):
 def _point_from_user(user):
     """Returns the user's PostGIS Point or None."""
     return user.location if user.is_authenticated and user.location else None
+
+
+def _country_scope_filter(user):
+    """
+    Returns a Q filter to scope listings/shops to the user's country.
+    Gold members can see all countries; everyone else sees only their own.
+    Unauthenticated users see all.
+    """
+    if user.is_authenticated and user.membership_plan != 'gold' and user.current_country:
+        return Q(shop__country_code=user.current_country)
+    return Q()
 
 
 def _nearby_shop_ids(user_point, radius_km=DEFAULT_RADIUS_KM):
@@ -130,6 +142,10 @@ class NearbyShopsView(generics.ListAPIView):
 
         base_qs = Shop.objects.filter(is_active=True)
 
+        # Non-gold members can only see shops in their own country
+        if user.membership_plan != 'gold' and user.current_country:
+            base_qs = base_qs.filter(country_code=user.current_country)
+
         if point:
             qs = base_qs.filter(
                 location__dwithin=(point, D(km=radius_km))
@@ -140,6 +156,7 @@ class NearbyShopsView(generics.ListAPIView):
             countries = [c for c in [user.current_country, user.destination_country] if c]
             qs = base_qs.filter(country_code__in=countries) if countries else base_qs
 
+        qs = qs.select_related('owner')
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
@@ -163,7 +180,7 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         request   = self.request
         user      = request.user if request.user.is_authenticated else None
-        qs        = ShopListing.objects.filter(is_available=True, is_deleted=False)
+        qs        = ShopListing.objects.select_related('shop', 'category').prefetch_related('images').filter(is_available=True, is_deleted=False)
         radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
 
         category = request.query_params.get('category')
@@ -181,15 +198,7 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
             shop_ids = _nearby_shop_ids(point, radius_km)
             return qs.filter(shop__id__in=shop_ids)
 
-        if user:
-            point = _point_from_user(user)
-            if point:
-                shop_ids = _nearby_shop_ids(point, radius_km)
-                return qs.filter(shop__id__in=shop_ids)
-
-            countries = [c for c in [user.current_country, user.destination_country] if c]
-            if countries:
-                return qs.filter(shop__country_code__in=countries)
+        qs = qs.filter(_country_scope_filter(user))
 
         return qs
 
@@ -198,19 +207,59 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
 
         # Auto-create a shop behind the scenes (Facebook Marketplace style)
         if not hasattr(user, 'shop'):
-            currency = settings.COUNTRY_CURRENCY_MAP.get(user.current_country, 'USD')
+            country_code = user.current_country
+
+            # Fallback: detect country from IP if user has none set
+            if not country_code:
+                try:
+                    from users.location_view import get_ip
+                    import requests as req
+                    ip = get_ip(self.request)
+                    res = req.get(
+                        f'http://ip-api.com/json/{ip or ""}?fields=status,countryCode',
+                        timeout=5,
+                    )
+                    data = res.json()
+                    if data.get('status') == 'success':
+                        country_code = data.get('countryCode', '')
+                except Exception:
+                    pass
+
+            currency = settings.COUNTRY_CURRENCY_MAP.get(country_code or '', 'USD')
             Shop.objects.create(
                 owner=user,
                 name=f"{user.first_name or user.username}'s Store",
-                country_code=user.current_country or '',
+                country_code=country_code or '',
                 currency=currency,
                 location=user.location,
                 city=user.city or '',
                 state_province=user.state_province or '',
                 is_active=True,
             )
-            # Refresh so user.shop is available
             user.refresh_from_db()
+
+        else:
+            # Fix existing shop with empty country_code
+            shop = user.shop
+            if not shop.country_code:
+                country_code = user.current_country
+                if not country_code:
+                    try:
+                        from users.location_view import get_ip
+                        import requests as req
+                        ip = get_ip(self.request)
+                        res = req.get(
+                            f'http://ip-api.com/json/{ip or ""}?fields=status,countryCode',
+                            timeout=5,
+                        )
+                        data = res.json()
+                        if data.get('status') == 'success':
+                            country_code = data.get('countryCode', '')
+                    except Exception:
+                        pass
+                if country_code:
+                    shop.country_code = country_code
+                    shop.save()  # save() automatically sets currency from country_code
 
         serializer.save(shop=user.shop, is_available=True)
 
@@ -290,23 +339,22 @@ class BoostListingView(APIView):
 
 
 class BoostedListingsView(generics.ListAPIView):
-    """Boosted listings scoped to user's current location."""
+    """
+    Boosted listings — non-gold members see only their country's boosted listings,
+    gold members see all.
+    """
     serializer_class   = ShopListingSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         user = self.request.user
-        qs   = ShopListing.objects.filter(
-            is_boosted=True,
-            is_available=True,
-            boost_expires_at__gt=timezone.now(),
-        )
-        point = _point_from_user(user)
-        if point:
-            shop_ids = _nearby_shop_ids(point)
-            return qs.filter(shop__id__in=shop_ids)
+        qs = ShopListing.objects.filter(
+            is_boosted=True, is_available=True, boost_expires_at__gt=timezone.now(),
+        ).select_related('shop', 'category').prefetch_related('images')
 
-        return qs.filter(shop__country_code=user.current_country)
+        qs = qs.filter(_country_scope_filter(user))
+
+        return qs
 
 
 class MySavedListingsView(generics.ListAPIView):

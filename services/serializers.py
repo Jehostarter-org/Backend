@@ -1,21 +1,39 @@
+from datetime import datetime
 from django.core.exceptions import FieldDoesNotExist
 from rest_framework import serializers
 from .models import (
     ServiceRequest, AirportPickup, HomeInspection, ChaperoneService,
-    JobApplicationAssistance, ServiceProviderProfile,
+    TemporaryHousing, ServiceProviderProfile,
     MigrationSpecialistApplication, ServiceReview,
-    Property, PropertyImage,  # ← ADD THESE TWO
+    Property, PropertyImage,
 )
 
 
 class AirportPickupSerializer(serializers.ModelSerializer):
+    # Write-only helpers — the frontend sends date + time as separate fields
+    arrival_date           = serializers.DateField(write_only=True, required=False)
+    estimated_arrival_time = serializers.TimeField(write_only=True, required=False)
+
     class Meta:
         model = AirportPickup
         fields = [
             'id', 'flight_number', 'arrival_datetime', 'airport',
             'terminal', 'pickup_point', 'num_passengers', 'num_bags',
             'special_requests',
+            # write-only helpers (not stored directly, combined below)
+            'arrival_date', 'estimated_arrival_time',
         ]
+        extra_kwargs = {
+            'arrival_datetime': {'required': False},
+        }
+
+    def validate(self, attrs):
+        """Combine arrival_date + estimated_arrival_time → arrival_datetime."""
+        arrival_date = attrs.pop('arrival_date', None)
+        arrival_time = attrs.pop('estimated_arrival_time', None)
+        if arrival_date and arrival_time:
+            attrs['arrival_datetime'] = datetime.combine(arrival_date, arrival_time)
+        return attrs
 
 
 class HomeInspectionSerializer(serializers.ModelSerializer):
@@ -33,25 +51,25 @@ class ChaperoneServiceSerializer(serializers.ModelSerializer):
         fields = ['id', 'help_type', 'location']
 
 
-class JobApplicationAssistanceSerializer(serializers.ModelSerializer):
+class TemporaryHousingSerializer(serializers.ModelSerializer):
     class Meta:
-        model = JobApplicationAssistance
+        model = TemporaryHousing
         fields = [
-            'id', 'job_title', 'industry', 'external_job_link',
-            'is_remote_service', 'meeting_location',
+            'id', 'property_address', 'check_in_date', 'check_out_date',
+            'num_guests', 'num_rooms', 'special_requests',
         ]
 
 
 class ServiceRequestSerializer(serializers.ModelSerializer):
-    airport_pickup_details = AirportPickupSerializer(required=False)
+    airport_pickup_details  = AirportPickupSerializer(required=False)
     home_inspection_details = HomeInspectionSerializer(required=False)
-    chaperone_details = ChaperoneServiceSerializer(required=False)
-    job_application_details = JobApplicationAssistanceSerializer(required=False)
+    chaperone_details       = ChaperoneServiceSerializer(required=False)
+    temporary_housing_details = TemporaryHousingSerializer(required=False)
 
-    provider_name = serializers.SerializerMethodField()
+    provider_name  = serializers.SerializerMethodField()
     requester_name = serializers.SerializerMethodField()
     driver_details = serializers.SerializerMethodField()
-    review = serializers.SerializerMethodField()
+    review         = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceRequest
@@ -64,8 +82,9 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             'distance_km', 'estimated_duration_min',
             'distance_price_multiplier', 'original_base_price',
             'distance_calculation_method',
+            'passenger_rating', 'passenger_review_comment',
             'airport_pickup_details', 'home_inspection_details',
-            'chaperone_details', 'job_application_details',
+            'chaperone_details', 'temporary_housing_details',
             'driver_details', 'review',
         ]
         read_only_fields = [
@@ -74,8 +93,6 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             'distance_price_multiplier', 'original_base_price',
             'distance_calculation_method',
         ]
-
-
 
     def get_driver_details(self, obj):
         """Return driver profile info when a provider is assigned."""
@@ -88,13 +105,22 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
         if not profile:
             return None
         user = profile.user
-        photo = None
-        if profile.profile_photo:
-            photo = profile.profile_photo.url if hasattr(profile.profile_photo, 'url') else str(profile.profile_photo)
-        front = None
-        if profile.front_view_picture:
-            front = profile.front_view_picture.url if hasattr(profile.front_view_picture, 'url') else str(profile.front_view_picture)
+        request = self.context.get('request')
+
+        def absurl(path):
+            if not path:
+                return None
+            if request:
+                return request.build_absolute_uri(path)
+            return path
+
+        photo = absurl(profile.profile_photo.url) if profile.profile_photo else None
+        front = absurl(profile.front_view_picture.url) if profile.front_view_picture else None
+        back  = absurl(profile.back_view_picture.url) if profile.back_view_picture else None
+        side  = absurl(profile.side_view_picture.url) if profile.side_view_picture else None
+        interior = absurl(profile.interior_picture.url) if profile.interior_picture else None
         return {
+            'user_id':           str(user.id),
             'full_name': (profile.first_name + ' ' + profile.last_name).strip() or user.get_full_name() or user.username,
             'profile_photo': photo,
             'vehicle_display': (str(profile.vehicle_year or '') + ' ' + str(profile.vehicle_model or '')).strip(),
@@ -102,9 +128,15 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             'vehicle_model': profile.vehicle_model or '',
             'license_plate_number': profile.license_plate_number or '',
             'front_view_picture': front,
+            'back_view_picture': back,
+            'side_view_picture': side,
+            'interior_picture': interior,
             'rating': float(profile.rating),
             'total_trips': profile.total_trips,
+            'phone': user.phone or '',
+            'emergency_contact': profile.emergency_contact or '',
         }
+
     def get_review(self, obj):
         try:
             review = obj.review
@@ -113,10 +145,10 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
         if not review:
             return None
         return {
-            id: str(review.id),
-            rating: review.rating,
-            comment: review.comment or chr(34)+chr(34),
-            created_at: review.created_at.isoformat() if review.created_at else None,
+            'id': str(review.id),
+            'rating': review.rating,
+            'comment': review.comment or '',
+            'created_at': review.created_at.isoformat() if review.created_at else None,
         }
 
     def get_requester_name(self, obj):
@@ -131,7 +163,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
                 service_type='airport_pickup',
             ).first()
             if profile:
-                return (profile.first_name + chr(32) + profile.last_name).strip()
+                return (profile.first_name + ' ' + profile.last_name).strip()
             return obj.provider.get_full_name() or obj.provider.username
         if obj.provider:
             return obj.provider.get_full_name() or obj.provider.username
@@ -140,8 +172,8 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         airport_data = validated_data.pop('airport_pickup_details', None)
         inspection_data = validated_data.pop('home_inspection_details', None)
-        chaperone_data = validated_data.pop('chaperone_details', None)
-        job_data = validated_data.pop('job_application_details', None)
+        chaperone_data  = validated_data.pop('chaperone_details', None)
+        housing_data    = validated_data.pop('temporary_housing_details', None)
 
         sr = ServiceRequest.objects.create(**validated_data)
 
@@ -151,8 +183,8 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             HomeInspection.objects.create(service_request=sr, **inspection_data)
         if chaperone_data:
             ChaperoneService.objects.create(service_request=sr, **chaperone_data)
-        if job_data:
-            JobApplicationAssistance.objects.create(service_request=sr, **job_data)
+        if housing_data:
+            TemporaryHousing.objects.create(service_request=sr, **housing_data)
 
         return sr
 
@@ -161,7 +193,7 @@ class ServiceReviewSerializer(serializers.ModelSerializer):
     class Meta:
         model = ServiceReview
         fields = ['id', 'service_request', 'reviewer', 'rating', 'comment', 'created_at']
-        read_only_fields = ['id', 'reviewer', 'created_at']
+        read_only_fields = ['id', 'service_request', 'reviewer', 'created_at']
 
 
 class ServiceProviderProfileSerializer(serializers.ModelSerializer):
@@ -186,6 +218,8 @@ class ServiceProviderProfileSerializer(serializers.ModelSerializer):
             'is_available', 'preferred_pickup_location',
             'max_service_distance_km', 'home_base_location',
             'home_base_latitude', 'home_base_longitude',
+            'sim_card_reference', 'tax_file_number_reference',
+            'offers_translation_service',
             'full_name',
         ]
         read_only_fields = [
@@ -222,7 +256,7 @@ class PropertyImageSerializer(serializers.ModelSerializer):
 
 class PropertySerializer(serializers.ModelSerializer):
     property_images = PropertyImageSerializer(many=True, read_only=True)
-    
+
     class Meta:
         model = Property
         fields = [
@@ -237,18 +271,18 @@ class PropertySerializer(serializers.ModelSerializer):
 
 
 _CAMEL_TO_SNAKE = {
-    'propertyTitle':  'property_title',
-    'propertyType':   'property_type',
-    'rentalType':     'rental_type',
+    'propertyTitle':   'property_title',
+    'propertyType':    'property_type',
+    'rentalType':      'rental_type',
     'nearestLandmark': 'nearest_landmark',
-    'availableFrom':  'available_from',
-    'priceAmount':    'price_amount',
-    'priceType':      'price_type',
+    'availableFrom':   'available_from',
+    'priceAmount':     'price_amount',
+    'priceType':       'price_type',
     'securityDeposit': 'security_deposit',
     'minStayDuration': 'min_stay_duration',
     'maxStayDuration': 'max_stay_duration',
-    'houseRules':     'house_rules',
-    'isPublished':    'is_published',
+    'houseRules':      'house_rules',
+    'isPublished':     'is_published',
 }
 
 
@@ -256,16 +290,16 @@ class PropertyCreateUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Property
         fields = '__all__'
-        read_only_fields = ['id', 'owner', 'created_at', 'updated_at', 'status']
+        read_only_fields = ['id', 'owner', 'created_at', 'updated_at']
         extra_kwargs = {
-            'price_amount': {'required': False, 'default': 0},
-            'price_type':   {'required': False, 'default': 'monthly'},
-            'bedrooms':     {'required': False, 'default': 1},
-            'bathrooms':    {'required': False, 'default': 1},
-            'country':      {'required': False, 'default': 'NG'},
-            'amenities':    {'required': False, 'default': list},
-            'images':       {'required': False, 'default': list},
-            'house_rules':  {'required': False, 'default': list},
+            'price_amount':      {'required': False, 'default': 0},
+            'price_type':        {'required': False, 'default': 'monthly'},
+            'bedrooms':          {'required': False, 'default': 1},
+            'bathrooms':         {'required': False, 'default': 1},
+            'country':           {'required': False, 'default': 'NG'},
+            'amenities':         {'required': False, 'default': list},
+            'images':            {'required': False, 'default': list},
+            'house_rules':       {'required': False, 'default': list},
             'min_stay_duration': {'required': False, 'default': 1},
         }
 

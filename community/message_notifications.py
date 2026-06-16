@@ -39,15 +39,21 @@ def notify_community_members(message):
         .select_related('user')
     )
 
+    notifications = []
     for member in members:
-        notif = Notification.objects.create(
+        notifications.append(Notification(
             recipient=member.user,
             actor=message.sender,
             notification_type='community_message',
             title=title,
             message=preview,
             link=link,
-        )
+        ))
+    if notifications:
+        created_notifications = Notification.objects.bulk_create(notifications)
+    
+    created_notifications = created_notifications if notifications else []
+    for member, notif in zip(members, created_notifications):
         _broadcast(
             group=f'user_notifications_{member.user_id}',
             event_type='new_notification',

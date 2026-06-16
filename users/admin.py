@@ -505,6 +505,7 @@ class UserAdmin(BaseUserAdmin, UserGeoAdmin):
     avatar_preview.short_description = 'Avatar Preview'
 
 
+
 # ─── EmailVerificationCode Admin ──────────────────────────────────────────────
 
 @admin.register(models.EmailVerificationCode)
@@ -594,7 +595,79 @@ class EmailVerificationCodeAdmin(admin.ModelAdmin):
     is_used_display.short_description = 'Used?'
     is_used_display.boolean = True
 
-    # ── Actions ───────────────────────────────────────────────────────────────
+    # ── Actions ───────────────────────────────────────────────────────────
+
+
+@admin.register(models.PasswordResetToken)
+class PasswordResetTokenAdmin(admin.ModelAdmin):
+    """
+    Admin for password-reset tokens.
+    Lets admins inspect, invalidate, and clean up stale tokens.
+    """
+
+    list_display = [
+        'user_link', 'user_email', 'status_badge',
+        'expires_at', 'created_at',
+    ]
+    list_filter = ['created_at', 'expires_at']
+    search_fields = ['user__email', 'user__username', 'token_hash']
+    readonly_fields = [
+        'id', 'user', 'token_hash',
+        'expires_at', 'used_at', 'created_at',
+        'status_badge',
+    ]
+    ordering = ['-created_at']
+    list_per_page = 30
+
+    fieldsets = (
+        ('Token Info', {
+            'fields': ('id', 'user', 'token_hash'),
+        }),
+        ('Status', {
+            'fields': ('status_badge', 'expires_at', 'used_at'),
+        }),
+        ('Timestamps', {
+            'fields': ('created_at',),
+        }),
+    )
+
+    actions = ['invalidate_tokens', 'delete_stale_tokens']
+
+    # ── Display helpers ───────────────────────────────────────────────────
+
+    def user_link(self, obj):
+        url = reverse('admin:users_user_change', args=[obj.user_id])
+        return format_html('<a href="{}">{}</a>', url, obj.user.username)
+    user_link.short_description = 'User'
+
+    def user_email(self, obj):
+        return obj.user.email
+    user_email.short_description = 'Email'
+
+    def status_badge(self, obj):
+        now = timezone.now()
+        if obj.used_at:
+            return mark_safe('<span style="color:#27ae60;">✓ Used</span>')
+        if now >= obj.expires_at:
+            return mark_safe('<span style="color:#e74c3c;">⏰ Expired</span>')
+        return mark_safe('<span style="color:#2980b9;">🔵 Active</span>')
+    status_badge.short_description = 'Status'
+
+    # ── Actions ───────────────────────────────────────────────────────────
+
+    def invalidate_tokens(self, request, queryset):
+        """Mark tokens as used so they can no longer be redeemed."""
+        updated = queryset.filter(used_at__isnull=True).update(used_at=timezone.now())
+        self.message_user(request, f'{updated} token(s) invalidated.')
+    invalidate_tokens.short_description = '🚫 Invalidate selected tokens'
+
+    def delete_stale_tokens(self, request, queryset):
+        """Remove expired and used tokens."""
+        now = timezone.now()
+        stale = queryset.filter(expires_at__lte=now) | queryset.filter(used_at__isnull=False)
+        count, _ = stale.delete()
+        self.message_user(request, f'{count} stale token(s) deleted.')
+    delete_stale_tokens.short_description = '🗑 Delete expired / used tokens'
 
     def reset_attempts(self, request, queryset):
         """Reset attempt counter — lets a locked user retry the same code."""

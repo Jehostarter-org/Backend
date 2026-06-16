@@ -20,11 +20,7 @@ class ParticipantSerializer(serializers.ModelSerializer):
         return obj.get_full_name() or obj.email
 
     def get_is_gold(self, obj):
-        # Adjust to your actual membership field/relation name
-        try:
-            return obj.membership.plan == 'gold'
-        except AttributeError:
-            return False
+        return obj.membership_plan == 'gold'
 
     def get_avatar_url(self, obj):
         request = self.context.get('request')
@@ -163,14 +159,14 @@ class StartConversationSerializer(serializers.Serializer):
     Payload to open a new DM thread.
     Called when user taps 'Message' on a profile, shop, or service.
     """
-    recipient_id       = serializers.IntegerField(required=False, allow_null=True)
+    recipient_id       = serializers.CharField(required=False, allow_null=True)
     initial_message    = serializers.CharField(required=False, allow_blank=True)
 
     # Service card context (optional — sent when opened from a service)
     service_type       = serializers.ChoiceField(
         choices=[
             'airport_pickup', 'home_inspection',
-            'job_application', 'chaperon', 'migration_specialist',
+            'chaperone', 'temporary_housing', 'migration_specialist',
         ],
         required=False,
         allow_null=True,

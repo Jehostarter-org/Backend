@@ -20,6 +20,8 @@ class UpdateLocationView(APIView):
         lat    = request.data.get('latitude')
         lng    = request.data.get('longitude')
         source = request.data.get('source', 'gps')
+        country_code = request.data.get('country_code')
+        city = request.data.get('city')
 
         if lat is None or lng is None:
             return Response({'error': 'latitude and longitude required'}, status=400)
@@ -27,7 +29,17 @@ class UpdateLocationView(APIView):
         try:
             request.user.location        = Point(float(lng), float(lat), srid=4326)
             request.user.location_source = source
-            request.user.save(update_fields=['location', 'location_source'])
+            update_fields = ['location', 'location_source']
+
+            if country_code:
+                request.user.current_country = country_code
+                update_fields.append('current_country')
+
+            if city:
+                request.user.city = city
+                update_fields.append('city')
+
+            request.user.save(update_fields=update_fields)
             return Response({
                 'status': 'location updated',
                 'lat':    float(lat),
@@ -71,7 +83,9 @@ class DetectLocationView(APIView):
 
                 request.user.location        = Point(float(lng), float(lat), srid=4326)
                 request.user.location_source = 'ip'
-                request.user.save(update_fields=['location', 'location_source'])
+                request.user.current_country = country_code
+                request.user.city            = city
+                request.user.save(update_fields=['location', 'location_source', 'current_country', 'city'])
 
                 return Response({
                     'status':       'ok',

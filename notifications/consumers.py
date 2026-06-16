@@ -6,12 +6,14 @@ When location changes, frontend receives the event and re-fetches nearby shops.
 """
 
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from rest_framework_simplejwt.tokens import AccessToken
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class NotificationConsumer(AsyncWebsocketConsumer):
@@ -34,7 +36,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
         unread = await self._unread_count()
-        print(f"[WS] Connected. Unread: {unread}")
+        logger.info("[WS] Connected. Unread: %s", unread)
         await self.send(text_data=json.dumps({
             'type': 'connection_established',
             'unread_count': unread,
@@ -42,7 +44,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         }))
 
     async def disconnect(self, code):
-        print(f"[WS] Disconnected. code={code}")
+        logger.info("[WS] Disconnected. code=%s", code)
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
         if hasattr(self, 'notifications_group_name'):
@@ -94,13 +96,13 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
     def _get_token(self):
         qs = self.scope.get('query_string', b'').decode()
-        print(f"[WS] query_string raw: {qs[:80]}")
+        logger.debug("[WS] query_string raw: %s", qs[:80])
         for part in qs.split('&'):
             if part.startswith('token='):
                 token = part[6:]
-                print(f"[WS] token present: True, length: {len(token)}")
+                logger.debug("[WS] token present: True, length: %s", len(token))
                 return token
-        print("[WS] token present: False")
+        logger.debug("[WS] token present: False")
         return None
 
     @database_sync_to_async
@@ -108,12 +110,12 @@ class NotificationConsumer(AsyncWebsocketConsumer):
         try:
             data    = AccessToken(token_str)
             user_id = data['user_id']
-            print(f"[WS] token user_id: {user_id}")
+            logger.debug("[WS] token user_id: %s", user_id)
             user = User.objects.get(id=user_id)
-            print(f"[WS] user resolved: {user.email}")
+            logger.debug("[WS] user resolved: %s", user.email)
             return user
         except Exception as e:
-            print(f"[WS] auth failed: {e}")
+            logger.warning("[WS] auth failed: %s", e)
             return None
 
     @database_sync_to_async

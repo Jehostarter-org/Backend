@@ -13,8 +13,8 @@ class ServiceRequest(models.Model):
     SERVICE_TYPES = [
         ('airport_pickup',       'Airport Pickup'),
         ('home_inspection',      'Home Inspection & Check'),
-        ('job_application',      'Job Application Assistance'),
-        ('chaperon',             'Chaperon Services'),
+        ('chaperone',            'Chaperone Services'),
+        ('temporary_housing',    'Temporary Housing'),
         ('migration_specialist', 'Migration Specialist'),
     ]
     STATUS = [
@@ -64,6 +64,9 @@ class ServiceRequest(models.Model):
         ('straight_line', 'Straight Line (Haversine)'),
         ('manual', 'Manually Entered'),
     ], help_text="Method used to calculate distance")
+
+    passenger_rating = models.PositiveSmallIntegerField(null=True, blank=True, help_text="Driver's rating of the passenger (1-5)")
+    passenger_review_comment = models.TextField(blank=True, help_text="Driver's review comment about the passenger")
 
     class Meta:
         db_table = 'service_requests'
@@ -180,10 +183,8 @@ class ChaperoneService(models.Model):
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     HELP_TYPES = [
-        ('sim_card',     'SIM Card Registration'),
         ('tax_file',     'Tax File Number (TFN)'),
         ('registration', 'General Registration'),
-        ('translation',  'Translation Service'),
         ('bank_account', 'Bank Account Opening'),
         ('other',        'Other'),
     ]
@@ -206,25 +207,26 @@ class ChaperoneService(models.Model):
         db_table = 'chaperone_services'
 
 
-class JobApplicationAssistance(models.Model):
+class TemporaryHousing(models.Model):
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
-    service_request   = models.OneToOneField(ServiceRequest, on_delete=models.CASCADE, related_name='job_application_details')
-    job_title         = models.CharField(max_length=200, blank=True)
-    industry          = models.CharField(max_length=100, blank=True)
-    cv_file           = models.FileField(upload_to='cvs/', null=True, blank=True)
-    external_job_link = models.URLField(blank=True)
-    specialist        = models.ForeignKey(
+    service_request = models.OneToOneField(ServiceRequest, on_delete=models.CASCADE, related_name='temporary_housing_details')
+    property_address = models.TextField()
+    check_in_date    = models.DateField()
+    check_out_date   = models.DateField()
+    num_guests       = models.PositiveIntegerField(default=1)
+    num_rooms        = models.PositiveIntegerField(default=1)
+    special_requests = models.TextField(blank=True)
+    host             = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
-        null=True, blank=True, related_name='job_assistance_jobs'
+        null=True, blank=True, related_name='temporary_housing_hosted'
     )
-    
-    # This service is typically remote, so distance may not apply
-    is_remote_service = models.BooleanField(default=True, help_text="Is this service provided remotely?")
-    meeting_location = models.CharField(max_length=200, blank=True, help_text="If in-person, where to meet")
 
     class Meta:
-        db_table = 'job_application_assistance'
+        db_table = 'temporary_housing'
+
+    def __str__(self):
+        return f"Temporary Housing – {self.property_address}"
 
 
 class ServiceProviderProfile(models.Model):
@@ -239,10 +241,10 @@ class ServiceProviderProfile(models.Model):
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     SERVICE_TYPES = [
-        ('airport_pickup',  'Driver'),
-        ('home_inspection', 'Home Inspector'),
-        ('chaperon',        'Chaperone'),
-        ('job_application', 'Job Application Assistant'),
+        ('airport_pickup',   'Driver'),
+        ('home_inspection',  'Home Inspector'),
+        ('chaperone',        'Chaperone'),
+        ('temporary_housing','Temporary Housing Host'),
     ]
     # Note: migration_specialist is excluded here — it has its own application flow
 
@@ -310,6 +312,11 @@ class ServiceProviderProfile(models.Model):
         null=True, blank=True,
         help_text="Clear photo of back license plate"
     )
+
+    # ── Chaperone-specific Fields ────────────────────────────────────────────
+    sim_card_reference = models.CharField(max_length=50, blank=True, help_text="SIM card registration reference number")
+    tax_file_number_reference = models.CharField(max_length=50, blank=True, help_text="Tax File Number (TFN) reference")
+    offers_translation_service = models.BooleanField(default=False, help_text="Can provide translation services")
 
     # ── Driver Profile Photo ──────────────────────────────────────────────────
     profile_photo = models.ImageField(

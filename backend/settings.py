@@ -1,14 +1,17 @@
+import sys
 from pathlib import Path
 from datetime import timedelta
 from decouple import config, Csv
 
 import os
 
-# Set the GDAL library path
-GDAL_LIBRARY_PATH = r'C:\GDAL\bin\gdal.dll'
+# .env — load from environment / .env file
+ORS_API_KEY = config('ORS_API_KEY', default='')
 
-# Also add to system PATH so Django can find dependencies
-os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
+# Platform-specific GDAL settings (Windows only)
+if sys.platform == 'win32':
+    GDAL_LIBRARY_PATH = r'C:\GDAL\bin\gdal.dll'
+    os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -89,7 +92,7 @@ DATABASES = {
         'USER': 'postgres',
         'PASSWORD': 'Benjamin*247',
         'HOST': '127.0.0.1',
-        'PORT': '5432',
+        'PORT': '5433',
     }
 }
 
@@ -273,4 +276,5 @@ COUNTRY_CURRENCY_MAP = {
     'US': 'USD', 'CA': 'CAD', 'AU': 'AUD',
 }
 SUPPORTED_COUNTRIES = list(COUNTRY_CURRENCY_MAP.keys())
-GRAPH_HOPPER_API_KEY = os.environ.get('GRAPH_HOPPER_API_KEY', '')
+ORS_API_KEY = config('ORS_API_KEY', default='')
+GRAPH_HOPPER_API_KEY = config('GRAPH_HOPPER_API_KEY', default='')

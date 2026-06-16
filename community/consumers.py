@@ -17,6 +17,7 @@ Supported server → client message types
 """
 
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from rest_framework_simplejwt.tokens import AccessToken
@@ -25,6 +26,7 @@ from .models import Community, CommunityMember, Message
 from .message_notifications import notify_community_members
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class CommunityConsumer(AsyncWebsocketConsumer):
@@ -52,7 +54,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_add(self.group_name, self.channel_name)
         await self.accept()
 
-        print(f'[WS Community] {self.user.username} connected to {self.community_id}')
+        logger.info('[WS Community] %s connected to %s', self.user.username, self.community_id)
 
         # Notify everyone (including self) that this user is now online
         await self.channel_layer.group_send(self.group_name, {
@@ -62,7 +64,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
         })
 
     async def disconnect(self, code):
-        print(f'[WS Community] {getattr(self, "user", "unknown")} disconnected. code={code}')
+        logger.info('[WS Community] %s disconnected. code=%s', getattr(self, 'user', 'unknown'), code)
         if hasattr(self, 'group_name'):
             if hasattr(self, 'user') and self.user is not None:
                 await self.channel_layer.group_send(self.group_name, {
@@ -198,7 +200,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             user_id = data['user_id']
             return User.objects.get(id=user_id)
         except Exception as e:
-            print(f'[WS Community] auth failed: {e}')
+            logger.warning('[WS Community] auth failed: %s', e)
             return None
 
     @database_sync_to_async

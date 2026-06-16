@@ -1,4 +1,5 @@
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 from rest_framework_simplejwt.tokens import AccessToken
@@ -6,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 
 
 class ChatConsumer(AsyncWebsocketConsumer):
@@ -37,19 +39,19 @@ class ChatConsumer(AsyncWebsocketConsumer):
         # ── Auth: same pattern as NotificationConsumer ────────────────────────
         token_str = self._get_token()
         if not token_str:
-            print(f'[Chat WS] No token — rejecting conversation {self.conversation_id}')
+            logger.warning('[Chat WS] No token — rejecting conversation %s', self.conversation_id)
             await self.close()
             return
 
         self.user = await self._get_user(token_str)
         if not self.user:
-            print(f'[Chat WS] Invalid token — rejecting conversation {self.conversation_id}')
+            logger.warning('[Chat WS] Invalid token — rejecting conversation %s', self.conversation_id)
             await self.close()
             return
 
         # ── Authorise: user must be a participant ─────────────────────────────
         if not await self._is_participant():
-            print(f'[Chat WS] {self.user.email} not in conversation {self.conversation_id}')
+            logger.warning('[Chat WS] %s not in conversation %s', self.user.email, self.conversation_id)
             await self.close()
             return
 
@@ -57,7 +59,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         await self.accept()
 
         unread = await self._unread_count()
-        print(f'[Chat WS] Connected: {self.user.email} → conversation {self.conversation_id}. Unread: {unread}')
+        logger.info('[Chat WS] Connected: %s → conversation %s. Unread: %s', self.user.email, self.conversation_id, unread)
 
         await self.send(text_data=json.dumps({
             'type':         'connected',
@@ -65,7 +67,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
         }))
 
     async def disconnect(self, close_code):
-        print(f'[Chat WS] Disconnected. code={close_code}')
+        logger.info('[Chat WS] Disconnected. code=%s', close_code)
         if hasattr(self, 'room_group_name'):
             await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
 
@@ -159,13 +161,13 @@ class ChatConsumer(AsyncWebsocketConsumer):
     def _get_token(self):
         """Extract JWT from query string — matches NotificationConsumer pattern."""
         qs = self.scope.get('query_string', b'').decode()
-        print(f'[Chat WS] query_string: {qs[:80]}')
+        logger.debug('[Chat WS] query_string: %s', qs[:80])
         for part in qs.split('&'):
             if part.startswith('token='):
                 token = part[6:]
-                print(f'[Chat WS] token present: True, length: {len(token)}')
+                logger.debug('[Chat WS] token present: True, length: %s', len(token))
                 return token
-        print('[Chat WS] token present: False')
+        logger.debug('[Chat WS] token present: False')
         return None
 
     @database_sync_to_async
@@ -174,12 +176,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
         try:
             data    = AccessToken(token_str)
             user_id = data['user_id']
-            print(f'[Chat WS] token user_id: {user_id}')
+            logger.debug('[Chat WS] token user_id: %s', user_id)
             user = User.objects.get(id=user_id)
-            print(f'[Chat WS] user resolved: {user.email}')
+            logger.debug('[Chat WS] user resolved: %s', user.email)
             return user
         except Exception as e:
-            print(f'[Chat WS] auth failed: {e}')
+            logger.warning('[Chat WS] auth failed: %s', e)
             return None
 
     @database_sync_to_async

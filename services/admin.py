@@ -52,10 +52,27 @@ class ServiceRequestAdmin(admin.ModelAdmin):
             'fields': ('country_code', 'city', 'scheduled_at')
         }),
         ('Pricing', {
-            'fields': ('price', 'currency')
+            'fields': ('price', 'currency', 'notes')
         }),
-        ('Additional Notes', {
-            'fields': ('notes',)
+        ('Pickup Location', {
+            'fields': (
+                'pickup_address', 'pickup_latitude', 'pickup_longitude',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Arrival Location', {
+            'fields': (
+                'arrival_address', 'arrival_latitude', 'arrival_longitude',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Distance & Pricing Details', {
+            'fields': (
+                'distance_km', 'estimated_duration_min',
+                'distance_price_multiplier', 'original_base_price',
+                'distance_calculation_method',
+            ),
+            'classes': ('collapse',)
         }),
         ('System Fields', {
             'fields': ('created_at', 'updated_at'),
@@ -71,8 +88,8 @@ class ServiceRequestAdmin(admin.ModelAdmin):
         colors = {
             'airport_pickup': 'green',
             'home_inspection': 'blue',
-            'job_application': 'purple',
-            'chaperon': 'orange',
+            'chaperone': 'orange',
+            'temporary_housing': 'teal',
             'migration_specialist': 'red'
         }
         color = colors.get(obj.service_type, 'gray')
@@ -189,13 +206,30 @@ class AirportPickupAdmin(admin.ModelAdmin):
             'fields': ('service_request',)
         }),
         ('Flight Details', {
-            'fields': ('flight_number', 'arrival_datetime', 'airport', 'terminal')
+            'fields': (
+                'flight_number', 'arrival_datetime', 'airport', 'terminal',
+                'pickup_point',
+            )
         }),
         ('Passenger Details', {
             'fields': ('num_passengers', 'num_bags', 'special_requests')
         }),
         ('Assignment', {
             'fields': ('driver',)
+        }),
+        ('Airport Distance', {
+            'fields': (
+                'distance_to_terminal_km', 'waiting_time_min',
+                'suggested_pickup_spot',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Flight Tracking', {
+            'fields': (
+                'flight_status', 'actual_landing_time',
+                'driver_arrived_at', 'passenger_picked_up_at',
+            ),
+            'classes': ('collapse',)
         }),
     )
     
@@ -262,6 +296,10 @@ class HomeInspectionAdmin(admin.ModelAdmin):
         ('Assignment & Results', {
             'fields': ('inspector', 'report', 'report_notes')
         }),
+        ('Distance & Duration', {
+            'fields': ('distance_from_inspector_km', 'inspection_duration_min'),
+            'classes': ('collapse',)
+        }),
     )
     
     def id_short(self, obj):
@@ -316,6 +354,10 @@ class ChaperoneServiceAdmin(admin.ModelAdmin):
         ('Assignment', {
             'fields': ('chaperone',)
         }),
+        ('Distance & Duration', {
+            'fields': ('distance_to_location_km', 'estimated_service_time_min'),
+            'classes': ('collapse',)
+        }),
     )
     
     def id_short(self, obj):
@@ -352,52 +394,51 @@ class ChaperoneServiceAdmin(admin.ModelAdmin):
     status_badge.short_description = 'Status'
 
 
-@admin.register(models.JobApplicationAssistance)
-class JobApplicationAssistanceAdmin(admin.ModelAdmin):
+@admin.register(models.TemporaryHousing)
+class TemporaryHousingAdmin(admin.ModelAdmin):
     list_display = [
-        'id_short', 'service_request_link', 'job_title', 'industry', 
-        'has_cv', 'specialist_info', 'status_badge'
+        'id_short', 'service_request_link', 'property_address_short',
+        'check_in_date', 'check_out_date', 'num_guests', 'host_info', 'status_badge'
     ]
-    list_filter = ['industry']
-    search_fields = ['job_title', 'industry', 'service_request__requester__email']
-    raw_id_fields = ['service_request', 'specialist']
+    list_filter = ['check_in_date', 'check_out_date']
+    search_fields = ['property_address', 'service_request__requester__email']
+    raw_id_fields = ['service_request', 'host']
     readonly_fields = ['id']
-    
+
     fieldsets = (
         ('Service Request', {
             'fields': ('service_request',)
         }),
-        ('Job Details', {
-            'fields': ('job_title', 'industry', 'external_job_link')
+        ('Property Details', {
+            'fields': ('property_address', 'check_in_date', 'check_out_date')
         }),
-        ('CV Upload', {
-            'fields': ('cv_file',)
+        ('Guest Details', {
+            'fields': ('num_guests', 'num_rooms', 'special_requests')
         }),
-        ('Assignment', {
-            'fields': ('specialist',)
+        ('Host', {
+            'fields': ('host',)
         }),
     )
-    
+
     def id_short(self, obj):
         return format_html('<code>{}</code>', obj.id[:8])
     id_short.short_description = 'ID'
-    
+
     def service_request_link(self, obj):
         url = reverse('admin:services_servicerequest_change', args=[obj.service_request.id])
         return format_html('<a href="{}">{}</a>', url, obj.service_request.get_service_type_display())
     service_request_link.short_description = 'Service'
-    
-    def has_cv(self, obj):
-        return bool(obj.cv_file)
-    has_cv.boolean = True
-    has_cv.short_description = 'CV Uploaded'
-    
-    def specialist_info(self, obj):
-        if obj.specialist:
-            return obj.specialist.get_full_name() or obj.specialist.username
+
+    def property_address_short(self, obj):
+        return obj.property_address[:50] + '...' if len(obj.property_address) > 50 else obj.property_address
+    property_address_short.short_description = 'Address'
+
+    def host_info(self, obj):
+        if obj.host:
+            return obj.host.get_full_name() or obj.host.username
         return '-'
-    specialist_info.short_description = 'Specialist'
-    
+    host_info.short_description = 'Host'
+
     def status_badge(self, obj):
         status = obj.service_request.status
         colors = {
@@ -427,13 +468,67 @@ class ServiceProviderProfileAdmin(admin.ModelAdmin):
     
     fieldsets = (
         ('Provider Information', {
-            'fields': ('user', 'service_type', 'bio')
+            'fields': ('user', 'service_type', 'bio', 'is_active', 'registered_at')
+        }),
+        ('Personal Details', {
+            'fields': (
+                'first_name', 'last_name', 'national_identity_number',
+                'emergency_contact',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Chaperone Details', {
+            'fields': (
+                'sim_card_reference', 'tax_file_number_reference',
+                'offers_translation_service',
+            ),
+            'classes': ('collapse',),
+            'description': 'These fields are specific to Chaperone service providers.',
         }),
         ('Service Location', {
             'fields': ('country_code', 'city')
         }),
-        ('Status', {
-            'fields': ('is_active', 'registered_at')
+        ('Driver License', {
+            'fields': (
+                'license_number', 'license_state_country',
+                'license_expiration_date', 'driver_license_image',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Vehicle Information', {
+            'fields': (
+                'vehicle_model', 'vehicle_year', 'vehicle_colour',
+                'license_plate_number', 'vin',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Vehicle Photos', {
+            'fields': (
+                'front_view_picture', 'back_view_picture',
+                'side_view_picture', 'interior_picture',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('License Plate Photos', {
+            'fields': (
+                'plate_number_front_view_picture',
+                'plate_number_back_view_picture',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Driver Profile & Stats', {
+            'fields': (
+                'profile_photo', 'total_trips', 'rating', 'total_reviews',
+                'is_available', 'preferred_pickup_location',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('Service Radius & Home Base', {
+            'fields': (
+                'max_service_distance_km', 'home_base_location',
+                'home_base_latitude', 'home_base_longitude',
+            ),
+            'classes': ('collapse',)
         }),
     )
     
@@ -449,8 +544,8 @@ class ServiceProviderProfileAdmin(admin.ModelAdmin):
         colors = {
             'airport_pickup': 'green',
             'home_inspection': 'blue',
-            'chaperon': 'orange',
-            'job_application': 'purple'
+            'chaperone': 'orange',
+            'temporary_housing': 'teal'
         }
         color = colors.get(obj.service_type, 'gray')
         return format_html(
@@ -694,13 +789,13 @@ class ServiceReviewAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-    
+
     def service_request_link(self, obj):
         url = reverse('admin:services_servicerequest_change', args=[obj.service_request.id])
         service_type = obj.service_request.get_service_type_display()
         return format_html('<a href="{}">{}</a>', url, service_type)
     service_request_link.short_description = 'Service'
-    
+
     def reviewer_info(self, obj):
         return format_html(
             '<strong>{}</strong><br/><small>{}</small>',
@@ -708,12 +803,180 @@ class ServiceReviewAdmin(admin.ModelAdmin):
             obj.reviewer.email
         )
     reviewer_info.short_description = 'Reviewer'
-    
+
     def rating_stars(self, obj):
         stars = '★' * obj.rating + '☆' * (5 - obj.rating)
         return format_html('<span style="color: #f39c12; font-size: 14px;">{}</span>', stars)
     rating_stars.short_description = 'Rating'
-    
+
     def comment_short(self, obj):
         return obj.comment[:100] + '...' if len(obj.comment) > 100 else obj.comment
     comment_short.short_description = 'Comment'
+
+
+@admin.register(models.DistanceCalculationLog)
+class DistanceCalculationLogAdmin(admin.ModelAdmin):
+    list_display = [
+        'service_request_link', 'calculation_method',
+        'calculated_distance_km', 'calculated_duration_min',
+        'api_status_code', 'error_short', 'created_at',
+    ]
+    list_filter = ['calculation_method', 'api_status_code', 'created_at']
+    search_fields = ['service_request__id', 'error_message']
+    raw_id_fields = ['service_request']
+    readonly_fields = [
+        'id', 'service_request', 'calculation_method',
+        'pickup_coords', 'arrival_coords',
+        'calculated_distance_km', 'calculated_duration_min',
+        'api_response_time_ms', 'api_status_code',
+        'error_message', 'created_at',
+    ]
+    list_per_page = 30
+
+    fieldsets = (
+        ('Calculation Info', {
+            'fields': (
+                'service_request', 'calculation_method',
+                'pickup_coords', 'arrival_coords',
+            )
+        }),
+        ('Results', {
+            'fields': (
+                'calculated_distance_km', 'calculated_duration_min',
+            )
+        }),
+        ('API Response', {
+            'fields': (
+                'api_response_time_ms', 'api_status_code',
+                'error_message',
+            ),
+            'classes': ('collapse',)
+        }),
+        ('System Fields', {
+            'fields': ('id', 'created_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    def service_request_link(self, obj):
+        url = reverse('admin:services_servicerequest_change', args=[obj.service_request.id])
+        return format_html('<a href="{}">{}</a>', url, obj.service_request.id[:8])
+    service_request_link.short_description = 'Service Request'
+
+    def error_short(self, obj):
+        if obj.error_message:
+            return obj.error_message[:60] + '...' if len(obj.error_message) > 60 else obj.error_message
+        return '—'
+    error_short.short_description = 'Error'
+
+    def has_add_permission(self, request):
+        return False  # Logs are created automatically, not manually
+
+
+class PropertyImageInline(admin.TabularInline):
+    model = models.PropertyImage
+    extra = 1
+    fields = ['image_url', 'order']
+    readonly_fields = []
+
+
+@admin.register(models.Property)
+class PropertyAdmin(admin.ModelAdmin):
+    list_display = [
+        'property_title', 'owner_info', 'property_type', 'rental_type',
+        'city', 'country', 'price_display', 'status_badge',
+        'bedrooms', 'bathrooms', 'created_at',
+    ]
+    list_filter = [
+        'property_type', 'rental_type', 'status', 'is_published',
+        'country', 'created_at',
+    ]
+    search_fields = [
+        'property_title', 'description', 'address',
+        'city', 'state', 'owner__email',
+    ]
+    raw_id_fields = ['owner']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    list_per_page = 25
+
+    fieldsets = (
+        ('Basic Info', {
+            'fields': (
+                'owner', 'property_title', 'property_type',
+                'rental_type', 'description',
+            )
+        }),
+        ('Location', {
+            'fields': ('address', 'nearest_landmark', 'city', 'state', 'country')
+        }),
+        ('Features', {
+            'fields': ('bedrooms', 'bathrooms', 'amenities', 'images')
+        }),
+        ('Pricing & Availability', {
+            'fields': (
+                'available_from', 'price_amount', 'price_type',
+                'security_deposit', 'min_stay_duration', 'max_stay_duration',
+                'house_rules',
+            )
+        }),
+        ('Status', {
+            'fields': ('status', 'is_published')
+        }),
+        ('Timestamps', {
+            'fields': ('id', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+    inlines = [PropertyImageInline]
+
+    def owner_info(self, obj):
+        return format_html(
+            '<strong>{}</strong><br/><small>{}</small>',
+            obj.owner.get_full_name() or obj.owner.username,
+            obj.owner.email
+        )
+    owner_info.short_description = 'Owner'
+
+    def price_display(self, obj):
+        return format_html('<strong>{}{}</strong>', obj.price_amount, obj.price_type)
+    price_display.short_description = 'Price'
+
+    def status_badge(self, obj):
+        colors = {
+            'draft': 'gray', 'published': 'green',
+            'rented': 'blue', 'unavailable': 'red',
+        }
+        color = colors.get(obj.status, 'gray')
+        return format_html(
+            '<span style="color: {}; font-weight: bold;">{}</span>',
+            color, obj.status.title()
+        )
+    status_badge.short_description = 'Status'
+
+    def publish_listings(self, request, queryset):
+        updated = queryset.update(status='published', is_published=True)
+        self.message_user(request, f'{updated} properties published.')
+    publish_listings.short_description = 'Publish selected properties'
+
+    def unpublish_listings(self, request, queryset):
+        updated = queryset.update(status='draft', is_published=False)
+        self.message_user(request, f'{updated} properties unpublished.')
+    unpublish_listings.short_description = 'Unpublish selected properties'
+
+    actions = ['publish_listings', 'unpublish_listings']
+
+
+@admin.register(models.PropertyImage)
+class PropertyImageAdmin(admin.ModelAdmin):
+    list_display = ['id', 'property_link', 'order', 'created_at']
+    list_filter = ['order']
+    search_fields = ['property__property_title', 'property__city']
+    raw_id_fields = ['property']
+    readonly_fields = ['id', 'created_at']
+    list_per_page = 50
+
+    def property_link(self, obj):
+        url = reverse('admin:services_property_change', args=[obj.property.id])
+        return format_html('<a href="{}">{}</a>', url, obj.property.property_title)
+    property_link.short_description = 'Property'

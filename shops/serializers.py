@@ -52,7 +52,7 @@ class ShopListingSerializer(serializers.ModelSerializer):
     shop          = ShopBriefSerializer(read_only=True)
     shop_id       = serializers.ReadOnlyField(source='shop.id')
     seller_id     = serializers.ReadOnlyField(source='shop.owner.id')
-    category      = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all())
+    category      = serializers.PrimaryKeyRelatedField(queryset=Category.objects.all(), allow_null=True, required=False)
     category_name = serializers.ReadOnlyField(source='category.name')
     category_slug = serializers.ReadOnlyField(source='category.slug')
     currency      = serializers.ReadOnlyField(source='shop.currency')
@@ -100,6 +100,8 @@ class ShopSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'owner', 'country_code', 'currency', 'created_at']
 
     def get_listings_count(self, obj):
+        if hasattr(obj, '_listings_count_annotation'):
+            return obj._listings_count_annotation
         return obj.listings.filter(is_available=True).count()
 
     def get_logo(self, obj):
@@ -213,13 +215,14 @@ class ShopApprovalStatusSerializer(serializers.ModelSerializer):
         return obj.is_active
     
     def get_documents_status(self, obj):
-        documents = obj.documents.all()
-        return {
-            'total': documents.count(),
-            'pending': documents.filter(status='pending').count(),
-            'approved': documents.filter(status='approved').count(),
-            'rejected': documents.filter(status='rejected').count()
-        }
+        from django.db.models import Count, Q
+        agg = obj.documents.aggregate(
+            total=Count('id'),
+            pending=Count('id', filter=Q(status='pending')),
+            approved=Count('id', filter=Q(status='approved')),
+            rejected=Count('id', filter=Q(status='rejected')),
+        )
+        return agg
 
 
 # Admin Serializers
