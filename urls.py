@@ -9,10 +9,16 @@ from strawberry.django.views import AsyncGraphQLView
 from schema.schema import schema
 from users.views import VerifyEmailView, ResendVerificationEmailView
 from users.location_search_view import LocationSearchView
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from memberships.views import CheckEligibilityExistsView, CheckGoldEligibilityDestinationView, CheckGoldEligibilityHomeView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('portal/', include('portal.urls')),
+
+    # ── API Docs ───────────────────────────────────────────────────────────────
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 
     # ── GraphQL (HTTP — queries + mutations) ──────────────────────────────────
     # csrf_exempt because clients authenticate via Bearer token not CSRF cookie.
@@ -26,6 +32,10 @@ urlpatterns = [
     path('api/location-search/',           LocationSearchView.as_view(),             name='location_search'),
     path('api/users/',                     include('users.urls')),
     path('api/memberships/',               include('memberships.urls')),
+    # Eligibility check endpoints (direct routes matching frontend expectations)
+    path('api/plan/gold/eligibility/check/destination', CheckGoldEligibilityDestinationView.as_view(), name='gold_eligibility_destination_direct'),
+    path('api/plan/gold/eligibility/check/home',        CheckGoldEligibilityHomeView.as_view(),        name='gold_eligibility_home_direct'),
+    path('api/plan/gold/eligibility/exists',            CheckEligibilityExistsView.as_view(),          name='eligibility_exists_direct'),
     path('api/shops/',                     include('shops.urls')),
     path('api/services/',                  include('services.urls')),
     path('api/community/',                 include('community.urls')),
