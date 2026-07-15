@@ -4,17 +4,6 @@ from datetime import timedelta
 from decouple import config, Csv
 import os
 
-<<<<<<< HEAD
-# .env — load from environment / .env file
-ORS_API_KEY = config('ORS_API_KEY', default='')
-
-# Platform-specific GDAL settings (Windows only)
-if sys.platform == 'win32':
-    GDAL_LIBRARY_PATH = r'C:\GDAL\bin\gdal.dll'
-    os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
-
-=======
->>>>>>> 8848d8c7519dd87ad7835dafd4ca6330bbdf6b6c
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ─── Environment Detection ────────────────────────────────────────────────────
@@ -101,16 +90,6 @@ TEMPLATES = [
 ]
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-<<<<<<< HEAD
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis',
-        'NAME': 'jehostarter',
-        'USER': 'postgres',
-        'PASSWORD': 'Benjamin*247',
-        'HOST': '127.0.0.1',
-        'PORT': '5433',
-=======
 # On Render, DATABASE_URL is set automatically by the Postgres service.
 # Locally it falls back to your Docker/local Postgres credentials.
 
@@ -134,7 +113,6 @@ else:
             'HOST':     config('DB_HOST',     default='127.0.0.1'),
             'PORT':     config('DB_PORT',     default='5432'),
         }
->>>>>>> 8848d8c7519dd87ad7835dafd4ca6330bbdf6b6c
     }
 
 # ─── Redis / Channel Layer ────────────────────────────────────────────────────
@@ -309,11 +287,6 @@ COUNTRY_CURRENCY_MAP = {
     'GB': 'GBP', 'FR': 'EUR', 'ES': 'EUR', 'PT': 'EUR', 'CY': 'EUR',
     'US': 'USD', 'CA': 'CAD', 'AU': 'AUD',
 }
-<<<<<<< HEAD
-SUPPORTED_COUNTRIES = list(COUNTRY_CURRENCY_MAP.keys())
-ORS_API_KEY = config('ORS_API_KEY', default='')
-GRAPH_HOPPER_API_KEY = config('GRAPH_HOPPER_API_KEY', default='')
-=======
 SUPPORTED_COUNTRIES      = list(COUNTRY_CURRENCY_MAP.keys())
+ORS_API_KEY              = config('ORS_API_KEY', default='')
 GRAPH_HOPPER_API_KEY     = config('GRAPH_HOPPER_API_KEY', default='')
->>>>>>> 8848d8c7519dd87ad7835dafd4ca6330bbdf6b6c
