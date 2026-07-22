@@ -16,7 +16,10 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('portal/', include('portal.urls')),
 
-    # ── API Docs ───────────────────────────────────────────────────────────────
+    # Health check
+    path('health/', include('health.urls')),
+
+    # API Docs
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 
