@@ -116,24 +116,38 @@ else:
 # Persist database connections across requests (reduces connection overhead)
 CONN_MAX_AGE = 600
 
+# ─── Redis URL ────────────────────────────────────────────────────────────────
+import urllib.parse
+_redis_url = config('REDIS_URL', default='')
+if _redis_url and _redis_url.startswith('redis://') and '@' in _redis_url:
+    _parsed = urllib.parse.urlparse(_redis_url)
+    _password = urllib.parse.quote(_parsed.password or '', safe='')
+    _redis_url = f'redis://{_parsed.username}:{_password}@{_parsed.hostname}:{_parsed.port or 6379}{_parsed.path}'
+
 # ─── Redis / Channel Layer ────────────────────────────────────────────────────
-# Render Redis service sets REDIS_URL automatically.
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [config('REDIS_URL', default='redis://127.0.0.1:6379')],
+            'hosts': [_redis_url] if _redis_url else ['redis://127.0.0.1:6379'],
         },
     },
 }
 
-# ─── Cache (optional but recommended on Render) ───────────────────────────────
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://127.0.0.1:6379'),
+# ─── Cache ────────────────────────────────────────────────────────────────────
+if _redis_url:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': _redis_url,
+        }
     }
-}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.locmem.LocMemCache',
+        }
+    }
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_USER_MODEL = 'users.User'
