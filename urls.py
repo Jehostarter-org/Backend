@@ -43,9 +43,9 @@ urlpatterns = [
     path('api/messaging/',                 include('messaging.urls', namespace='messaging')),  # ← NEW
 ]
 
-# Serve media and static files in development
+# Serve media files (always — Dokploy proxy doesn't handle /media/ natively)
+urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
 if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
 # WebSocket routes are in backend/asgi.py — not here.
