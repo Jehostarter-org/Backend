@@ -1,8 +1,9 @@
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, re_path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.views.decorators.csrf import csrf_exempt
+from django.views.static import serve
 
 import custom_admin  # noqa: F401 — superuser-friendly admin + site branding
 from strawberry.django.views import AsyncGraphQLView
@@ -43,8 +44,21 @@ urlpatterns = [
     path('api/messaging/',                 include('messaging.urls', namespace='messaging')),  # ← NEW
 ]
 
-# Serve media files (always — Dokploy proxy doesn't handle /media/ natively)
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# ── Media files ───────────────────────────────────────────────────────────────
+# NOTE: Django's static() helper silently returns an empty urlpatterns list
+# whenever settings.DEBUG is False — this is baked into Django itself
+# (django/conf/urls/static.py), regardless of how/where you call it.
+# Since Dokploy's Traefik proxy doesn't serve /media/ natively, and DEBUG=False
+# in production, we wire up django.views.static.serve directly instead so
+# media is actually served regardless of DEBUG.
+#
+# Caveat: django.views.static.serve is NOT production-hardened (no caching
+# headers, not built for high traffic). This unblocks things now; longer term,
+# have Traefik serve /media/ directly from the host volume path instead.
+urlpatterns += [
+    re_path(r'^media/(?P<path>.*)$', serve, {'document_root': settings.MEDIA_ROOT}),
+]
+
 if settings.DEBUG:
     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
 
