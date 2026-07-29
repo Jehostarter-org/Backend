@@ -295,9 +295,5 @@ COUNTRY_CURRENCY_MAP = {
 SUPPORTED_COUNTRIES      = list(COUNTRY_CURRENCY_MAP.keys())
 ORS_API_KEY              = config('ORS_API_KEY', default='')
 GRAPH_HOPPER_API_KEY     = config('GRAPH_HOPPER_API_KEY', default='')
-_GOOGLE_CLIENT_ID_ENV    = config('GOOGLE_CLIENT_ID', default='')
-# Ignore the old client ID if it's still set in Dokploy env vars
-if _GOOGLE_CLIENT_ID_ENV == '282926972818-cgcmau1p3f7o20giscv70f6mvle09n5f.apps.googleusercontent.com':
-    _GOOGLE_CLIENT_ID_ENV = ''
-GOOGLE_CLIENT_ID         = _GOOGLE_CLIENT_ID_ENV or '1055105019679-p2mshk8libmgj79f0qsgm7jasa98qcpj.apps.googleusercontent.com'
-GOOGLE_CLIENT_SECRET     = config('GOOGLE_CLIENT_SECRET', default='') or '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'
+GOOGLE_CLIENT_ID         = '1055105019679-p2mshk8libmgj79f0qsgm7jasa98qcpj.apps.googleusercontent.com'
+GOOGLE_CLIENT_SECRET     = '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'
