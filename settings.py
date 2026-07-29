@@ -73,6 +73,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF     = 'backend.urls'
 ASGI_APPLICATION = 'backend.asgi.application'
+WSGI_APPLICATION = 'backend.wsgi.application'
 
 TEMPLATES = [
     {
