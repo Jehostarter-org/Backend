@@ -18,7 +18,7 @@ if os.name == 'nt':  # Windows local dev only
     os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
 
 # ─── Security ─────────────────────────────────────────────────────────────────
-SECRET_KEY    = config('SECRET_KEY')
+SECRET_KEY    = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
 ALLOWED_HOSTS = config(
     'ALLOWED_HOSTS',
     cast=Csv(),
