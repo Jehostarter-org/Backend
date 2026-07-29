@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import timedelta
 from decouple import config, Csv
 import os
+import ctypes.util
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -96,18 +97,20 @@ TEMPLATES = [
 
 DATABASE_URL = config('DATABASE_URL', default='')
 
+_has_gdal = ctypes.util.find_library('gdal') is not None
+_gis_engine = 'django.contrib.gis.db.backends.postgis'
+_plain_engine = 'django.db.backends.postgresql'
+_engine = _gis_engine if _has_gdal else _plain_engine
+
 if DATABASE_URL:
-    # Production: Render provides a full connection URL.
-    # We parse it manually to force the PostGIS engine regardless.
     import dj_database_url
     db_config = dj_database_url.parse(DATABASE_URL)
-    db_config['ENGINE'] = 'django.contrib.gis.db.backends.postgis'
+    db_config['ENGINE'] = _engine
     DATABASES = {'default': db_config}
 else:
-    # Local development: use individual credentials from .env
     DATABASES = {
         'default': {
-            'ENGINE':   'django.contrib.gis.db.backends.postgis',
+            'ENGINE':   _engine,
             'NAME':     config('DB_NAME',     default='jehostarter'),
             'USER':     config('DB_USER',     default='postgres'),
             'PASSWORD': config('DB_PASSWORD', default=''),
