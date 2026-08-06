@@ -1,0 +1,84 @@
+# Core
+Django==6.0.5
+dj-database-url==2.3.0
+python-decouple==3.8
+python-ulid==3.1.0
+
+# Database
+psycopg2-binary==2.9.12
+
+# REST API
+djangorestframework==3.17.1
+djangorestframework_simplejwt==5.5.1
+drf-spectacular==0.29.0
+django-filter==25.2
+
+# Auth
+google-auth==2.52.0
+google-auth-oauthlib==1.4.0
+PyJWT==2.12.1
+argon2-cffi==25.1.0
+argon2-cffi-bindings==25.1.0
+
+# CORS
+django-cors-headers==4.9.0
+
+# Channels (WebSocket)
+channels==4.3.2
+channels_redis==4.3.0
+daphne==4.2.1
+redis==7.4.0
+
+# GraphQL
+strawberry-graphql==0.315.3
+strawberry-graphql-django==0.84.0
+graphql-core==3.2.8
+
+# Image handling
+pillow==12.2.0
+
+# API Docs
+django-extensions==4.1
+
+# Utilities
+requests==2.34.0
+requests-oauthlib==2.0.0
+beautifulsoup4==4.14.3
+python-dateutil==2.9.0.post0
+pytz==2026.2
+typing_extensions==4.15.0
+tzdata==2026.2
+tzlocal==5.3.1
+uritemplate==4.2.0
+
+# Static files
+whitenoise==6.12.0
+gunicorn==26.0.0
+
+# Geo utilities
+h3==4.4.2
+numpy==2.4.6
+timezonefinder==8.2.4
+
+# ASGI
+asgiref==3.11.1
+Twisted==25.5.0
+autobahn==25.12.2
+txaio==25.12.2
+zope.interface==8.4
+cryptography==48.0.0
+service-identity==24.2.0
+pyOpenSSL==26.2.0
+
+# Encoding
+ujson==5.12.1
+cbor2==6.0.1
+msgpack==1.1.2
+flatbuffers==25.12.19
+
+# Other
+six==1.17.0
+idna==3.13
+urllib3==2.7.0
+certifi==2026.4.22
+charset-normalizer==3.4.7

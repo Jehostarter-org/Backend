@@ -1,9 +1,7 @@
-import sys
 from pathlib import Path
 from datetime import timedelta
 from decouple import config, Csv
 import os
-import ctypes.util
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -19,7 +17,7 @@ if os.name == 'nt':  # Windows local dev only
     os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
 
 # ─── Security ─────────────────────────────────────────────────────────────────
-SECRET_KEY    = config('SECRET_KEY', default='django-insecure-dev-key-change-in-production')
+SECRET_KEY    = config('SECRET_KEY')
 ALLOWED_HOSTS = config(
     'ALLOWED_HOSTS',
     cast=Csv(),
@@ -92,25 +90,21 @@ TEMPLATES = [
 ]
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-# On Render, DATABASE_URL is set automatically by the Postgres service.
-# Locally it falls back to your Docker/local Postgres credentials.
+import dj_database_url
 
 DATABASE_URL = config('DATABASE_URL', default='')
 
-_has_gdal = ctypes.util.find_library('gdal') is not None
-_gis_engine = 'django.contrib.gis.db.backends.postgis'
-_plain_engine = 'django.db.backends.postgresql'
-_engine = _gis_engine if _has_gdal else _plain_engine
-
 if DATABASE_URL:
-    import dj_database_url
-    db_config = dj_database_url.parse(DATABASE_URL)
-    db_config['ENGINE'] = _engine
-    DATABASES = {'default': db_config}
+    # Production: parse the full connection URL and force PostGIS engine.
+    DATABASES = {
+        'default': dj_database_url.parse(DATABASE_URL)
+    }
+    DATABASES['default']['ENGINE'] = 'django.contrib.gis.db.backends.postgis'
 else:
+    # Local development: use individual credentials from .env
     DATABASES = {
         'default': {
-            'ENGINE':   _engine,
+            'ENGINE':   'django.contrib.gis.db.backends.postgis',
             'NAME':     config('DB_NAME',     default='jehostarter'),
             'USER':     config('DB_USER',     default='postgres'),
             'PASSWORD': config('DB_PASSWORD', default=''),
@@ -119,24 +113,41 @@ else:
         }
     }
 
+# Persist database connections across requests (reduces connection overhead)
+CONN_MAX_AGE = 600
+
+# ─── Redis URL ────────────────────────────────────────────────────────────────
+import urllib.parse
+_redis_url = config('REDIS_URL', default='')
+if _redis_url and _redis_url.startswith('redis://') and '@' in _redis_url:
+    _parsed = urllib.parse.urlparse(_redis_url)
+    _password = urllib.parse.quote(_parsed.password or '', safe='')
+    _redis_url = f'redis://{_parsed.username}:{_password}@{_parsed.hostname}:{_parsed.port or 6379}{_parsed.path}'
+
 # ─── Redis / Channel Layer ────────────────────────────────────────────────────
-# Render Redis service sets REDIS_URL automatically.
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [config('REDIS_URL', default='redis://127.0.0.1:6379')],
+            'hosts': [_redis_url] if _redis_url else ['redis://127.0.0.1:6379'],
         },
     },
 }
 
-# ─── Cache (optional but recommended on Render) ───────────────────────────────
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-        'LOCATION': config('REDIS_URL', default='redis://127.0.0.1:6379'),
+# ─── Cache ────────────────────────────────────────────────────────────────────
+if _redis_url:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': _redis_url,
+        }
     }
-}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.locmem.LocMemCache',
+        }
+    }
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_USER_MODEL = 'users.User'
@@ -159,14 +170,13 @@ AUTH_PASSWORD_VALIDATORS = [
 # ─── Static & Media ───────────────────────────────────────────────────────────
 STATIC_URL  = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
-if STATIC_ROOT.exists():
-    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 MEDIA_URL  = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # ─── CORS & CSRF ──────────────────────────────────────────────────────────────
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='https://jehostarter.com')
 
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
@@ -189,26 +199,34 @@ if DEBUG:
     CORS_ALLOW_CREDENTIALS = True
 
 else:
-    # Production — set CORS_ALLOWED_ORIGINS in your Render env vars
-    CORS_ALLOWED_ORIGINS   = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='')
+    CORS_ALLOWED_ORIGINS   = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='https://jehostarter.com')
     CORS_ALLOW_CREDENTIALS = True
-    if not CSRF_TRUSTED_ORIGINS:
-        CSRF_TRUSTED_ORIGINS = []
+    CORS_ALLOW_HEADERS = [
+        'accept', 'accept-encoding', 'authorization', 'content-type',
+        'dnt', 'origin', 'user-agent', 'x-csrftoken', 'x-requested-with',
+    ]
+    CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 
 # ─── HTTPS / Security Headers (production only) ───────────────────────────────
 if not DEBUG:
     SECURE_HSTS_SECONDS            = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD            = True
-    # Render terminates SSL at the edge — Django sits behind a proxy.
-    # Don't redirect to HTTPS internally; Render handles it.
+    # Dokploy/Traefik terminates SSL at the edge — Django sits behind a proxy.
+    # Don't redirect to HTTPS internally; Traefik handles it.
     SECURE_SSL_REDIRECT            = False
     SECURE_PROXY_SSL_HEADER        = ('HTTP_X_FORWARDED_PROTO', 'https')
     SESSION_COOKIE_SECURE          = True
     CSRF_COOKIE_SECURE             = True
-    SECURE_BROWSER_XSS_FILTER      = True
     SECURE_CONTENT_TYPE_NOSNIFF    = True
     X_FRAME_OPTIONS                = 'DENY'
+
+# ─── File Upload Limits ──────────────────────────────────────────────────────
+DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
+
+# ─── Backend URL (for serializer image URLs) ─────────────────────────────────
+BACKEND_URL = config('BACKEND_URL', default='https://api.jehostarter.com')
 
 # ─── Internationalisation ─────────────────────────────────────────────────────
 LANGUAGE_CODE      = 'en-us'
@@ -238,7 +256,7 @@ DEFAULT_FROM_EMAIL       = config(
     'DEFAULT_FROM_EMAIL',
     default=_email_user or 'Jehostarter <noreply@jehostarter.com>',
 )
-FRONTEND_URL             = config('FRONTEND_URL', default='http://localhost:3000')
+FRONTEND_URL             = config('FRONTEND_URL', default='https://jehostarter.com')
 EMAIL_OTP_EXPIRY_MINUTES = config('EMAIL_OTP_EXPIRY_MINUTES', cast=int, default=15)
 
 # ─── REST Framework ───────────────────────────────────────────────────────────
@@ -263,6 +281,15 @@ REST_FRAMEWORK = {
         'forgot_password': '3/hour',
         'resend_verification': '3/hour',
     },
+    # Use Redis for throttle cache (shared across workers)
+    'DEFAULT_THROTTLE_CACHE': 'default',
+    # Disable BrowsableAPI in production (API consumers only)
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ] if not DEBUG else [
+        'rest_framework.renderers.JSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ],
 }
 
 # ─── JWT ──────────────────────────────────────────────────────────────────────
@@ -295,5 +322,32 @@ COUNTRY_CURRENCY_MAP = {
 SUPPORTED_COUNTRIES      = list(COUNTRY_CURRENCY_MAP.keys())
 ORS_API_KEY              = config('ORS_API_KEY', default='')
 GRAPH_HOPPER_API_KEY     = config('GRAPH_HOPPER_API_KEY', default='')
-GOOGLE_CLIENT_ID         = '1055105019679-p2mshk8libmgj79f0qsgm7jasa98qcpj.apps.googleusercontent.com'
-GOOGLE_CLIENT_SECRET     = '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'
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}
