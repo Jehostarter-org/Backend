@@ -222,8 +222,8 @@ if not DEBUG:
     X_FRAME_OPTIONS                = 'DENY'
 
 # ─── File Upload Limits ──────────────────────────────────────────────────────
-DATA_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
-FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024   # 10 MB
+DATA_UPLOAD_MAX_MEMORY_SIZE = 250 * 1024 * 1024   # 250 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 250 * 1024 * 1024   # 250 MB
 
 # ─── Backend URL (for serializer image URLs) ─────────────────────────────────
 BACKEND_URL = config('BACKEND_URL', default='https://api.jehostarter.com')
