@@ -145,7 +145,7 @@ if _redis_url:
 else:
     CACHES = {
         'default': {
-            'BACKEND': 'django.core.cache.locmem.LocMemCache',
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
         }
     }
 
