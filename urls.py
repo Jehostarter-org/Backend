@@ -11,7 +11,15 @@ from schema.schema import schema
 from users.views import VerifyEmailView, ResendVerificationEmailView
 from users.location_search_view import LocationSearchView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-from memberships.views import CheckEligibilityExistsView, CheckGoldEligibilityDestinationView, CheckGoldEligibilityHomeView
+from memberships.views import (
+    CheckEligibilityExistsView,
+    CheckGoldEligibilityDestinationView,
+    CheckGoldEligibilityHomeView,
+    AdminEligibilityListAllView,
+    AdminEligibilityDetailView,
+    AdminProcessEligibilityView,
+    AdminEligibilityStatsView,
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -40,6 +48,12 @@ urlpatterns = [
     path('api/plan/gold/eligibility/check/destination', CheckGoldEligibilityDestinationView.as_view(), name='gold_eligibility_destination_direct'),
     path('api/plan/gold/eligibility/check/home',        CheckGoldEligibilityHomeView.as_view(),        name='gold_eligibility_home_direct'),
     path('api/plan/gold/eligibility/exists',            CheckEligibilityExistsView.as_view(),          name='eligibility_exists_direct'),
+
+    # Admin: review gold-eligibility submissions (direct routes, mirror the /api/plan/... pattern above)
+    path('api/plan/admin/eligibility/',                  AdminEligibilityListAllView.as_view(),        name='admin_eligibility_list_direct'),
+    path('api/plan/admin/eligibility/stats/',            AdminEligibilityStatsView.as_view(),          name='admin_eligibility_stats_direct'),
+    path('api/plan/admin/eligibility/<str:pk>/',         AdminEligibilityDetailView.as_view(),         name='admin_eligibility_detail_direct'),
+    path('api/plan/admin/eligibility/<str:pk>/process/', AdminProcessEligibilityView.as_view(),        name='admin_process_eligibility_direct'),
     path('api/shops/',                     include('shops.urls')),
     path('api/services/',                  include('services.urls')),
     path('api/community/',                 include('community.urls')),
