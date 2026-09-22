@@ -90,6 +90,7 @@ class ShopListing(models.Model):
 
     shop         = models.ForeignKey(Shop, on_delete=models.CASCADE, related_name='listings')
     category     = models.ForeignKey(Category, on_delete=models.SET_NULL, null=True, related_name='listings')
+    subcategory  = models.CharField(max_length=100, blank=True, default='')
     title        = models.CharField(max_length=300)
     description  = models.TextField()
     price        = models.DecimalField(max_digits=12, decimal_places=2)

@@ -1,6 +1,6 @@
 {% extends "portal/base.html" %}
 
-{% block title %}Shop Approvals — Jehostarter Admin{% endblock %}
+{% block title %}Shop Items — Jehostarter Admin{% endblock %}
 
 {% block body %}
 <div class="layout">
@@ -11,7 +11,11 @@
     </div>
     <nav class="sidebar-nav">
       <a href="{% url 'portal_dashboard' %}" class="nav-link">Dashboard</a>
-      <a href="{% url 'portal_shops' %}" class="nav-link active">Shop approvals</a>
+      <a href="{% url 'portal_shops' %}" class="nav-link active">Shop items</a>
+      <a href="{% url 'portal_support' %}" class="nav-link">Support inbox</a>
+      <a href="{% url 'portal_providers' %}" class="nav-link">Provider approvals</a>
+      <a href="{% url 'portal_eligibility' %}" class="nav-link">Eligibility approvals</a>
+      <a href="{% url 'portal_communities' %}" class="nav-link">Community members</a>
       <a href="{% url 'portal_users' %}" class="nav-link">Users</a>
     </nav>
     <div class="sidebar-footer">
@@ -23,40 +27,65 @@
   <main class="content">
     <header class="page-header">
       <div>
-        <h1>Shop approvals</h1>
-        <p>Review submitted shops and approve or reject them.</p>
+        <h1>Shop items</h1>
+        <p>All items posted in shops. You can view and delete any item.</p>
       </div>
-      <button id="refresh-shops" class="btn btn-secondary">Refresh</button>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <input id="item-search" class="btn btn-secondary" type="search" placeholder="Search title, shop, owner…" style="width:220px; text-align:left;" />
+        <select id="item-status-filter" class="btn btn-secondary" style="width:auto;">
+          <option value="">All statuses</option>
+          <option value="active">Available</option>
+          <option value="inactive">Unavailable</option>
+        </select>
+        <button id="refresh-items" class="btn btn-secondary">Refresh</button>
+      </div>
     </header>
 
-    <div id="shops-error" class="alert alert-error hidden"></div>
-    <div id="shops-loading" class="loading">Loading pending shops…</div>
-    <div id="shops-empty" class="empty-state hidden">
-      <h2>No shops pending approval</h2>
-      <p>New shop submissions will appear here.</p>
+    <section class="stats-grid" style="margin-bottom:20px;">
+      <article class="stat-card">
+        <span class="stat-label">Total items</span>
+        <strong id="item-stat-total" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Available</span>
+        <strong id="item-stat-active" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Unavailable</span>
+        <strong id="item-stat-inactive" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Boosted</span>
+        <strong id="item-stat-boosted" class="stat-value">—</strong>
+      </article>
+    </section>
+
+    <div id="items-error" class="alert alert-error hidden"></div>
+    <div id="items-loading" class="loading">Loading shop items…</div>
+    <div id="items-empty" class="empty-state hidden">
+      <h2>No items found</h2>
+      <p>Items posted in shops will appear here.</p>
     </div>
-    <div id="shops-list" class="shop-list"></div>
+    <div id="items-list" class="shop-list"></div>
   </main>
 </div>
 
-<dialog id="shop-modal" class="modal">
+<dialog id="item-delete-modal" class="modal">
   <form method="dialog" class="modal-panel">
     <header class="modal-header">
       <div>
-        <h2 id="modal-shop-name">Shop details</h2>
-        <p id="modal-shop-meta"></p>
+        <h2>Delete item</h2>
+        <p id="delete-item-meta"></p>
       </div>
-      <button type="button" class="btn btn-ghost btn-small" id="modal-close">Close</button>
+      <button type="button" class="btn btn-ghost btn-small" id="delete-close">Close</button>
     </header>
-    <div id="modal-body" class="modal-body"></div>
+    <div id="delete-item-body" class="modal-body">
+      <p>Are you sure you want to delete this item? This cannot be undone.</p>
+    </div>
     <footer class="modal-footer">
-      <label class="notes-field">
-        Notes / rejection reason
-        <textarea id="modal-notes" rows="3" placeholder="Optional for approval. Required for rejection."></textarea>
-      </label>
       <div class="modal-actions">
-        <button type="button" class="btn btn-danger" id="modal-reject">Reject</button>
-        <button type="button" class="btn btn-primary" id="modal-approve">Approve shop</button>
+        <button type="button" class="btn btn-secondary" id="delete-cancel">Cancel</button>
+        <button type="button" class="btn btn-danger" id="delete-confirm">Delete item</button>
       </div>
     </footer>
   </form>
@@ -67,6 +96,6 @@
 <script>
   Portal.requireAuth();
   Portal.initShell();
-  Portal.initShopsPage();
+  Portal.initShopItemsPage();
 </script>
 {% endblock %}

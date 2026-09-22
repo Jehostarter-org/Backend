@@ -11,7 +11,11 @@
     </div>
     <nav class="sidebar-nav">
       <a href="{% url 'portal_dashboard' %}" class="nav-link active">Dashboard</a>
-      <a href="{% url 'portal_shops' %}" class="nav-link">Shop approvals</a>
+      <a href="{% url 'portal_shops' %}" class="nav-link">Shop items</a>
+      <a href="{% url 'portal_support' %}" class="nav-link">Support inbox</a>
+      <a href="{% url 'portal_providers' %}" class="nav-link">Provider approvals</a>
+      <a href="{% url 'portal_eligibility' %}" class="nav-link">Eligibility approvals</a>
+      <a href="{% url 'portal_communities' %}" class="nav-link">Community members</a>
       <a href="{% url 'portal_users' %}" class="nav-link">Users</a>
     </nav>
     <div class="sidebar-footer">
@@ -26,9 +30,10 @@
         <h1>Dashboard</h1>
         <p>Overview of shops waiting for your review.</p>
       </div>
-      <a href="{% url 'portal_shops' %}" class="btn btn-primary">Review shops</a>
+      <a href="{% url 'portal_shops' %}" class="btn btn-primary">Manage shop items</a>
     </header>
 
+    <h2 style="margin-bottom:12px;">Shops</h2>
     <section class="stats-grid" id="stats-grid">
       <article class="stat-card">
         <span class="stat-label">Pending approval</span>
@@ -47,6 +52,64 @@
         <strong id="stat-changes" class="stat-value">—</strong>
       </article>
     </section>
+
+    <h2 style="margin:24px 0 12px;">Provider Approvals</h2>
+    <section class="stats-grid" id="provider-stats-grid">
+      <article class="stat-card">
+        <span class="stat-label">Pending providers</span>
+        <strong id="stat-provider-pending" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Approved</span>
+        <strong id="stat-provider-approved" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Rejected</span>
+        <strong id="stat-provider-rejected" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Pending drivers</span>
+        <strong id="stat-provider-pending-drivers" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Pending chaperones</span>
+        <strong id="stat-provider-pending-chaperones" class="stat-value">—</strong>
+      </article>
+    </section>
+
+    <h2 style="margin:24px 0 12px;">Eligibility Approvals</h2>
+    <section class="stats-grid" id="eligibility-stats-grid">
+      <article class="stat-card">
+        <span class="stat-label">Total submissions</span>
+        <strong id="elig-stat-total" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Pending / Processing</span>
+        <strong id="elig-stat-pending" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Approved</span>
+        <strong id="elig-stat-approved" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Conditional</span>
+        <strong id="elig-stat-conditional" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Rejected</span>
+        <strong id="elig-stat-rejected" class="stat-value">—</strong>
+      </article>
+    </section>
+
+    <h2 style="margin:24px 0 12px;">Community Group Acceptances</h2>
+    <header style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <p style="margin:0; color:var(--muted);">
+        Recent members accepted into groups — <strong id="community-recent-total">—</strong> shown below.
+      </p>
+      <a href="{% url 'portal_communities' %}" class="btn btn-secondary">View all members</a>
+    </header>
+    <div id="community-recent-error" class="alert alert-error hidden"></div>
+    <div id="community-recent-list" class="shop-list"></div>
   </main>
 </div>
 {% endblock %}
@@ -56,5 +119,8 @@
   Portal.requireAuth();
   Portal.initShell();
   Portal.initDashboardPage();
+  Portal.initDashboardProviderStats();
+  Portal.initEligibilityStats();
+  Portal.initDashboardCommunitySection();
 </script>
 {% endblock %}

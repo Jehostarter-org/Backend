@@ -33,9 +33,12 @@ STEP 2 — Run migrations after adding the Message model:
 """
 
 from django.urls import re_path
-from .consumers import CommunityConsumer
+from .consumers import CommunityConsumer, CommunityEventsConsumer
 
 community_websocket_urlpatterns = [
+    # Specific routes MUST come before the generic community_id catch-all
+    # ws://<host>/ws/community/events/ — global community event stream
+    re_path(r'^ws/community/events/$', CommunityEventsConsumer.as_asgi()),
     # ws://<host>/ws/community/<community_id>/?token=<jwt>
     re_path(r'^ws/community/(?P<community_id>[^/]+)/$', CommunityConsumer.as_asgi()),
 ]

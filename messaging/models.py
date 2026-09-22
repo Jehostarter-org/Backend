@@ -25,6 +25,7 @@ class Conversation(models.Model):
             ('chaperone',           'Chaperone'),
             ('temporary_housing',   'Temporary Housing'),
             ('migration_specialist','Migration Specialist'),
+            ('support',             'Support'),
         ],
         help_text='If this conversation was started from a service, record which one.',
     )
@@ -39,6 +40,9 @@ class Conversation(models.Model):
     location_country = models.CharField(max_length=2, blank=True, null=True,
         help_text='ISO 3166-1 alpha-2 country code of the initiating user')
 
+    # Support requests carry a short subject line (optional)
+    subject = models.CharField(max_length=255, blank=True, default='')
+
     created_at  = models.DateTimeField(auto_now_add=True)
     updated_at  = models.DateTimeField(auto_now=True)  # bumped on every new message
 
@@ -50,10 +54,24 @@ class Conversation(models.Model):
         return f'Conversation({names})'
 
     def get_other_participant(self, user):
+        # For a support thread participants hold only the customer, so any staff
+        # reachin out sees the customer; a customer simply sees the first
+        # non-self participant (or None).
         return self.participants.exclude(pk=user.pk).first()
 
+    def support_customer(self):
+        """For a support thread, return the customer (non-staff participant)."""
+        return self.participants.exclude(is_staff=True).first()
+
+    def is_support(self):
+        return self.service_type == 'support'
+
     def unread_count_for(self, user):
-        return self.messages.filter(is_read=False).exclude(sender=user).count()
+        qs = self.messages.filter(is_read=False).exclude(sender=user)
+        # For a staff member on a support thread, unread = messages from the customer only.
+        if self.is_support() and user.is_staff:
+            qs = qs.exclude(sender__is_staff=True)
+        return qs.count()
 
 
 class Message(models.Model):
@@ -112,7 +130,7 @@ class MessageAttachment(models.Model):
         on_delete=models.CASCADE,
         related_name='attachments',
     )
-    file     = models.ImageField(upload_to='messaging/attachments/%Y/%m/')
+    file     = models.FileField(upload_to='messaging/attachments/%Y/%m/')
     filename = models.CharField(max_length=255)
     filesize = models.PositiveIntegerField(help_text='Size in bytes')
     uploaded_at = models.DateTimeField(auto_now_add=True)

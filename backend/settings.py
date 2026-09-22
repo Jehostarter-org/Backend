@@ -1,39 +1,42 @@
-import sys
 from pathlib import Path
 from datetime import timedelta
 from decouple import config, Csv
-
 import os
-
-# .env — load from environment / .env file
-ORS_API_KEY = config('ORS_API_KEY', default='')
-
-# Platform-specific GDAL settings (Windows only)
-if sys.platform == 'win32':
-    GDAL_LIBRARY_PATH = r'C:\GDAL\bin\gdal.dll'
-    os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# ─── Environment Detection ────────────────────────────────────────────────────
+DEBUG = config('DEBUG', cast=bool, default=False)
+IS_RENDER = os.environ.get('RENDER', False)  # Render sets this automatically
+
+# ─── GDAL / GeoDjango ─────────────────────────────────────────────────────────
+# On Windows (local dev), point to your local GDAL install.
+# On Render (Linux), GDAL is available system-wide — no path needed.
+if os.name == 'nt':  # Windows local dev only
+    GDAL_LIBRARY_PATH = r'C:\GDAL\bin\gdal.dll'
+    os.environ['PATH'] = r'C:\GDAL\bin;' + os.environ.get('PATH', '')
+
 # ─── Security ─────────────────────────────────────────────────────────────────
 SECRET_KEY    = config('SECRET_KEY')
-DEBUG         = config('DEBUG', cast=bool, default=False)
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv(), default='localhost,127.0.0.1')
+ALLOWED_HOSTS = config(
+    'ALLOWED_HOSTS',
+    cast=Csv(),
+    default='localhost,127.0.0.1'
+)
 ADMIN_REGISTRATION_SECRET = config('ADMIN_REGISTRATION_SECRET', default='').strip()
 
+# ─── Apps ─────────────────────────────────────────────────────────────────────
 INSTALLED_APPS = [
-    # ── Daphne MUST be first ───────────────────────────────────────────────────
-    'daphne',                # MUST be first - enables ASGI for runserver
-    
-    # ── Django Core ───────────────────────────────────────────────────────────
+    'daphne',  # MUST be first — enables ASGI for runserver
+
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.gis',  # Required for PostGIS / GeoDjango
 
-    # ── Third-party ───────────────────────────────────────────────────────────
     'rest_framework',
     'rest_framework_simplejwt',
     'corsheaders',
@@ -44,7 +47,6 @@ INSTALLED_APPS = [
     'whitenoise',
     'django_extensions',
 
-    # ── Local Apps ────────────────────────────────────────────────────────────
     'users',
     'memberships',
     'shops',
@@ -54,8 +56,10 @@ INSTALLED_APPS = [
     'portal',
     'messaging',
 ]
+
+# ─── Middleware ───────────────────────────────────────────────────────────────
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',         # must be first
+    'corsheaders.middleware.CorsMiddleware',          # must be first
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -68,6 +72,7 @@ MIDDLEWARE = [
 
 ROOT_URLCONF     = 'backend.urls'
 ASGI_APPLICATION = 'backend.asgi.application'
+WSGI_APPLICATION = 'backend.wsgi.application'
 
 TEMPLATES = [
     {
@@ -85,26 +90,64 @@ TEMPLATES = [
 ]
 
 # ─── Database ─────────────────────────────────────────────────────────────────
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.contrib.gis.db.backends.postgis',
-        'NAME': 'jehostarter',
-        'USER': 'postgres',
-        'PASSWORD': 'Benjamin*247',
-        'HOST': '127.0.0.1',
-        'PORT': '5433',
+import dj_database_url
+
+DATABASE_URL = config('DATABASE_URL', default='')
+
+if DATABASE_URL:
+    # Production: parse the full connection URL and force PostGIS engine.
+    DATABASES = {
+        'default': dj_database_url.parse(DATABASE_URL)
     }
-}
+    DATABASES['default']['ENGINE'] = 'django.contrib.gis.db.backends.postgis'
+else:
+    # Local development: use individual credentials from .env
+    DATABASES = {
+        'default': {
+            'ENGINE':   'django.contrib.gis.db.backends.postgis',
+            'NAME':     config('DB_NAME',     default='jehostarter'),
+            'USER':     config('DB_USER',     default='postgres'),
+            'PASSWORD': config('DB_PASSWORD', default=''),
+            'HOST':     config('DB_HOST',     default='127.0.0.1'),
+            'PORT':     config('DB_PORT',     default='5432'),
+        }
+    }
+
+# Persist database connections across requests (reduces connection overhead)
+CONN_MAX_AGE = 600
+
+# ─── Redis URL ────────────────────────────────────────────────────────────────
+import urllib.parse
+_redis_url = config('REDIS_URL', default='')
+if _redis_url and _redis_url.startswith('redis://') and '@' in _redis_url:
+    _parsed = urllib.parse.urlparse(_redis_url)
+    _password = urllib.parse.quote(_parsed.password or '', safe='')
+    _redis_url = f'redis://{_parsed.username}:{_password}@{_parsed.hostname}:{_parsed.port or 6379}{_parsed.path}'
 
 # ─── Redis / Channel Layer ────────────────────────────────────────────────────
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels_redis.core.RedisChannelLayer',
         'CONFIG': {
-            'hosts': [config('REDIS_URL', default='redis://127.0.0.1:6379')],
+            'hosts': [_redis_url] if _redis_url else ['redis://127.0.0.1:6379'],
         },
     },
 }
+
+# ─── Cache ────────────────────────────────────────────────────────────────────
+if _redis_url:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': _redis_url,
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        }
+    }
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 AUTH_USER_MODEL = 'users.User'
@@ -125,89 +168,77 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # ─── Static & Media ───────────────────────────────────────────────────────────
-STATIC_URL          = '/static/'
-STATIC_ROOT         = BASE_DIR / 'staticfiles'
+STATIC_URL  = '/static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 MEDIA_URL  = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # ─── CORS & CSRF ──────────────────────────────────────────────────────────────
-# CORS controls which origins browsers allow to make cross-origin requests.
-# CSRF_TRUSTED_ORIGINS controls which origins Django accepts POST/PUT/PATCH
-# requests from (including GraphQL mutations and REST writes).
-# Both must include localhost:3000 for local Next.js development.
-
-# Always load CSRF_TRUSTED_ORIGINS from .env first, then add development defaults
-CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='')
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv(), default='https://jehostarter.com')
 
 if DEBUG:
     CORS_ALLOW_ALL_ORIGINS = True
 
-    # Development origins that must be trusted
-    development_origins = [
+    _dev_origins = [
         'http://localhost:3000',
         'http://127.0.0.1:3000',
         'http://localhost:8000',
         'http://127.0.0.1:8000',
     ]
-    
-    # Add development origins to CSRF trusted origins (avoid duplicates)
-    for origin in development_origins:
+    for origin in _dev_origins:
         if origin not in CSRF_TRUSTED_ORIGINS:
             CSRF_TRUSTED_ORIGINS.append(origin)
 
-    # Allow all headers and methods for development
     CORS_ALLOW_HEADERS = [
-        'accept',
-        'accept-encoding',
-        'authorization',
-        'content-type',
-        'dnt',
-        'origin',
-        'user-agent',
-        'x-csrftoken',
-        'x-requested-with',
+        'accept', 'accept-encoding', 'authorization', 'content-type',
+        'dnt', 'origin', 'user-agent', 'x-csrftoken', 'x-requested-with',
     ]
-    CORS_ALLOW_METHODS = [
-        'DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT',
-    ]
-    # Allow cookies/auth headers in cross-origin requests
+    CORS_ALLOW_METHODS  = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
     CORS_ALLOW_CREDENTIALS = True
 
 else:
-    CORS_ALLOWED_ORIGINS  = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='')
-    # In production, use only what's in .env
-    if not CSRF_TRUSTED_ORIGINS:
-        CSRF_TRUSTED_ORIGINS = []
+    CORS_ALLOWED_ORIGINS   = config('CORS_ALLOWED_ORIGINS', cast=Csv(), default='https://jehostarter.com')
     CORS_ALLOW_CREDENTIALS = True
+    CORS_ALLOW_HEADERS = [
+        'accept', 'accept-encoding', 'authorization', 'content-type',
+        'dnt', 'origin', 'user-agent', 'x-csrftoken', 'x-requested-with',
+    ]
+    CORS_ALLOW_METHODS = ['DELETE', 'GET', 'OPTIONS', 'PATCH', 'POST', 'PUT']
 
 # ─── HTTPS / Security Headers (production only) ───────────────────────────────
 if not DEBUG:
     SECURE_HSTS_SECONDS            = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD            = True
-    SECURE_SSL_REDIRECT            = True
+    # Dokploy/Traefik terminates SSL at the edge — Django sits behind a proxy.
+    # Don't redirect to HTTPS internally; Traefik handles it.
+    SECURE_SSL_REDIRECT            = False
+    SECURE_PROXY_SSL_HEADER        = ('HTTP_X_FORWARDED_PROTO', 'https')
     SESSION_COOKIE_SECURE          = True
     CSRF_COOKIE_SECURE             = True
-    SECURE_BROWSER_XSS_FILTER      = True
     SECURE_CONTENT_TYPE_NOSNIFF    = True
     X_FRAME_OPTIONS                = 'DENY'
 
-# ─── Internationalisation ─────────────────────────────────────────────────────
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE     = 'UTC'
-USE_I18N      = True
-USE_TZ        = True
+# ─── File Upload Limits ──────────────────────────────────────────────────────
+DATA_UPLOAD_MAX_MEMORY_SIZE = 250 * 1024 * 1024   # 250 MB
+FILE_UPLOAD_MAX_MEMORY_SIZE = 250 * 1024 * 1024   # 250 MB
 
+# ─── Backend URL (for serializer image URLs) ─────────────────────────────────
+BACKEND_URL = config('BACKEND_URL', default='https://api.jehostarter.com')
+
+# ─── Internationalisation ─────────────────────────────────────────────────────
+LANGUAGE_CODE      = 'en-us'
+TIME_ZONE          = 'UTC'
+USE_I18N           = True
+USE_TZ             = True
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# ─── Email ──────────────────────────────────────────────────────────────────────
-# Set EMAIL_HOST_USER + EMAIL_HOST_PASSWORD in backend/.env to send real mail (SMTP).
-# Without credentials, OTP emails print to the Django runserver console only.
-_email_user = config('EMAIL_HOST_USER', default='').strip()
-_email_pass = config('EMAIL_HOST_PASSWORD', default='').strip()
-_email_backend = config('EMAIL_BACKEND', default='').strip()
+# ─── Email ────────────────────────────────────────────────────────────────────
+_email_user    = config('EMAIL_HOST_USER',     default='').strip()
+_email_pass    = config('EMAIL_HOST_PASSWORD', default='').strip()
+_email_backend = config('EMAIL_BACKEND',       default='').strip()
 
 if _email_backend:
     EMAIL_BACKEND = _email_backend
@@ -216,16 +247,16 @@ elif _email_user and _email_pass:
 else:
     EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
-EMAIL_HOST          = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT          = config('EMAIL_PORT', cast=int, default=587)
-EMAIL_USE_TLS       = config('EMAIL_USE_TLS', cast=bool, default=True)
-EMAIL_HOST_USER     = _email_user
-EMAIL_HOST_PASSWORD = _email_pass
-DEFAULT_FROM_EMAIL  = config(
+EMAIL_HOST               = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT               = config('EMAIL_PORT', cast=int, default=587)
+EMAIL_USE_TLS            = config('EMAIL_USE_TLS', cast=bool, default=True)
+EMAIL_HOST_USER          = _email_user
+EMAIL_HOST_PASSWORD      = _email_pass
+DEFAULT_FROM_EMAIL       = config(
     'DEFAULT_FROM_EMAIL',
     default=_email_user or 'Jehostarter <noreply@jehostarter.com>',
 )
-FRONTEND_URL        = config('FRONTEND_URL', default='http://localhost:3000')
+FRONTEND_URL             = config('FRONTEND_URL', default='https://jehostarter.com')
 EMAIL_OTP_EXPIRY_MINUTES = config('EMAIL_OTP_EXPIRY_MINUTES', cast=int, default=15)
 
 # ─── REST Framework ───────────────────────────────────────────────────────────
@@ -244,6 +275,21 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 20,
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_THROTTLE_RATES': {
+        'signup': '3/hour',
+        'login': '10/min',
+        'forgot_password': '3/hour',
+        'resend_verification': '3/hour',
+    },
+    # Use Redis for throttle cache (shared across workers)
+    'DEFAULT_THROTTLE_CACHE': 'default',
+    # Disable BrowsableAPI in production (API consumers only)
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ] if not DEBUG else [
+        'rest_framework.renderers.JSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ],
 }
 
 # ─── JWT ──────────────────────────────────────────────────────────────────────
@@ -261,10 +307,8 @@ SPECTACULAR_SETTINGS = {
 }
 
 # ─── Strawberry GraphQL ───────────────────────────────────────────────────────
-# Strawberry handles its own auth — CSRF exemption is needed because
-# GraphQL clients send JSON (not form data) and manage auth via Bearer token.
 STRAWBERRY_DJANGO = {
-    'CSRF_EXEMPT': True,   # exempt /graphql/ from Django's CSRF middleware
+    'CSRF_EXEMPT': True,
 }
 
 # ─── Platform Config ──────────────────────────────────────────────────────────
@@ -275,6 +319,35 @@ COUNTRY_CURRENCY_MAP = {
     'GB': 'GBP', 'FR': 'EUR', 'ES': 'EUR', 'PT': 'EUR', 'CY': 'EUR',
     'US': 'USD', 'CA': 'CAD', 'AU': 'AUD',
 }
-SUPPORTED_COUNTRIES = list(COUNTRY_CURRENCY_MAP.keys())
-ORS_API_KEY = config('ORS_API_KEY', default='')
-GRAPH_HOPPER_API_KEY = config('GRAPH_HOPPER_API_KEY', default='')
+SUPPORTED_COUNTRIES      = list(COUNTRY_CURRENCY_MAP.keys())
+ORS_API_KEY              = config('ORS_API_KEY', default='')
+GRAPH_HOPPER_API_KEY     = config('GRAPH_HOPPER_API_KEY', default='')
+
+# ─── Logging ──────────────────────────────────────────────────────────────────
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose',
+        },
+    },
+    'root': {
+        'handlers': ['console'],
+        'level': 'INFO',
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+    },
+}

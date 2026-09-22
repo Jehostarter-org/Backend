@@ -27,12 +27,19 @@ class ListingImageSerializer(serializers.ModelSerializer):
 
 
 class ShopBriefSerializer(serializers.ModelSerializer):
-    logo   = serializers.SerializerMethodField()
-    banner = serializers.SerializerMethodField()
+    logo        = serializers.SerializerMethodField()
+    banner      = serializers.SerializerMethodField()
+    is_verified = serializers.SerializerMethodField()
 
     class Meta:
         model  = Shop
-        fields = ['id', 'name', 'country_code', 'city', 'currency', 'logo', 'banner']
+        fields = ['id', 'name', 'country_code', 'city', 'currency', 'logo', 'banner', 'is_verified']
+
+    def get_is_verified(self, obj):
+        try:
+            return obj.approval_request.status == 'approved'
+        except Exception:
+            return False
 
     def get_logo(self, obj):
         request = self.context.get('request')
@@ -61,6 +68,7 @@ class ShopListingSerializer(serializers.ModelSerializer):
         model  = ShopListing
         fields = [
             'id', 'shop', 'shop_id', 'seller_id', 'category', 'category_name', 'category_slug',
+            'subcategory',
             'title', 'description', 'price', 'currency',
             'listing_type', 'condition', 'is_boosted',
             'is_available', 'images', 'created_at',
@@ -83,21 +91,90 @@ class ShopListingSerializer(serializers.ModelSerializer):
 
         return listing
 
+    def update(self, instance, validated_data):
+        request = self.context.get('request')
+        instance = super().update(instance, validated_data)
+
+        if request:
+            # Delete images whose IDs are in delete_images[]
+            delete_ids = request.data.getlist('delete_images') if hasattr(request.data, 'getlist') else []
+            if delete_ids:
+                instance.images.filter(id__in=delete_ids).delete()
+
+            # Re-order remaining images so new uploads start after the last one
+            existing_count = instance.images.count()
+
+            # Add new images
+            for index, image in enumerate(request.FILES.getlist('images')):
+                ListingImage.objects.create(
+                    listing=instance,
+                    image=image,
+                    is_primary=(existing_count == 0 and index == 0),
+                    order=existing_count + index,
+                )
+
+            # Ensure the first image is marked as primary
+            first = instance.images.order_by('order').first()
+            if first and not first.is_primary:
+                instance.images.filter(is_primary=True).update(is_primary=False)
+                first.is_primary = True
+                first.save(update_fields=['is_primary'])
+
+        return instance
+
+
+class AdminListingListItemSerializer(serializers.ModelSerializer):
+    """Admin: a shop item (listing) for the portal Shop items page."""
+    shop_name        = serializers.CharField(source='shop.name', read_only=True)
+    owner_name       = serializers.CharField(source='shop.owner.get_full_name', read_only=True)
+    owner_email      = serializers.CharField(source='shop.owner.email', read_only=True)
+    category_name    = serializers.CharField(source='category.name', read_only=True, default=None)
+    currency         = serializers.CharField(source='shop.currency', read_only=True)
+    primary_image    = serializers.SerializerMethodField()
+    image_count      = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = ShopListing
+        fields = [
+            'id', 'title', 'price', 'currency', 'listing_type', 'condition',
+            'category_name', 'subcategory', 'is_available', 'is_boosted',
+            'shop_name', 'owner_name', 'owner_email', 'primary_image',
+            'image_count', 'created_at',
+        ]
+
+    def get_primary_image(self, obj):
+        prime = obj.images.filter(is_primary=True).first() or obj.images.first()
+        if not prime:
+            return None
+        request = self.context.get('request')
+        if request:
+            return request.build_absolute_uri(prime.image.url)
+        return f"{settings.BACKEND_URL}{prime.image.url}"
+
+    def get_image_count(self, obj):
+        return obj.images.count()
+
 
 class ShopSerializer(serializers.ModelSerializer):
     listings_count = serializers.SerializerMethodField()
     owner_username = serializers.ReadOnlyField(source='owner.username')
     logo           = serializers.SerializerMethodField()
     banner         = serializers.SerializerMethodField()
+    is_verified    = serializers.SerializerMethodField()
 
     class Meta:
         model  = Shop
         fields = [
             'id', 'owner', 'owner_username', 'name', 'description',
             'country_code', 'city', 'currency', 'logo', 'banner',
-            'whatsapp', 'website', 'is_active', 'listings_count', 'created_at',
+            'whatsapp', 'website', 'is_active', 'is_verified', 'listings_count', 'created_at',
         ]
-        read_only_fields = ['id', 'owner', 'country_code', 'currency', 'created_at']
+
+    def get_is_verified(self, obj):
+        try:
+            return obj.approval_request.status == 'approved'
+        except Exception:
+            return False
 
     def get_listings_count(self, obj):
         if hasattr(obj, '_listings_count_annotation'):

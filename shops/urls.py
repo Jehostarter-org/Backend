@@ -8,6 +8,7 @@ from .views import (
     ResubmitShopApprovalView, AdminPendingApprovalsView,
     AdminAllShopApprovalsView, AdminShopApprovalDetailView,
     AdminProcessShopApprovalView, AdminReviewDocumentsView, AdminShopStatsView,
+    AdminListingListView, AdminListingDeleteView,
 )
 
 urlpatterns = [
@@ -51,6 +52,10 @@ urlpatterns = [
     path('admin/shops/documents/review/', AdminReviewDocumentsView.as_view(), name='admin_review_documents'),
     path('admin/shops/<str:id>/approval-detail/', AdminShopApprovalDetailView.as_view(), name='admin_approval_detail'),
     path('admin/shops/<str:shop_id>/process-approval/', AdminProcessShopApprovalView.as_view(), name='admin_process_approval'),
+
+    # �"?�"? Admin: shop items (all listings + delete) �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�
+    path('admin/items/', AdminListingListView.as_view(), name='admin_listings_list'),
+    path('admin/items/<str:pk>/', AdminListingDeleteView.as_view(), name='admin_listing_delete'),
 
     # ── Shop detail (must stay last — catches /<shop_id>/) ───────────────────
     path('<str:pk>/', ShopDetailView.as_view(), name='shop_detail'),

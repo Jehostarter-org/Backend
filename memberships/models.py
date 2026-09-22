@@ -66,3 +66,76 @@ class UserMembership(models.Model):
 
     def __str__(self):
         return f"{self.user} – {self.plan} ({'active' if self.is_active else 'expired'})"
+
+
+class EligibilityCheck(models.Model):
+    PATHWAY_CHOICES = [
+        ('a', 'Already in Destination Country'),
+        ('b', 'Still in Home Country'),
+    ]
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('processing', 'Processing'),
+        ('approved', 'Approved'),
+        ('conditionally_approved', 'Conditionally Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='eligibility_checks')
+    pathway = models.CharField(max_length=1, choices=PATHWAY_CHOICES)
+    status = models.CharField(max_length=22, choices=STATUS_CHOICES, default='pending')
+
+    # Pathway A fields
+    visa_expiry = models.DateField(null=True, blank=True)
+
+    # Pathway B fields
+    passport_expiry = models.DateField(null=True, blank=True)
+    migration_doc_type = models.CharField(max_length=20, blank=True)
+
+    # Common fields
+    phone = models.CharField(max_length=20, blank=True)
+    email = models.EmailField(max_length=254, blank=True)
+    destination_country = models.CharField(max_length=2, blank=True)
+    destination_city = models.CharField(max_length=100, blank=True)
+
+    metadata = models.JSONField(default=dict, blank=True)
+
+    # Admin review fields
+    rejection_reason = models.TextField(blank=True, default='')
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'eligibility_checks'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.user} – Pathway {self.pathway.upper()} ({self.status})"
+
+
+class EligibilityDocument(models.Model):
+    DOCUMENT_TYPES = [
+        ('visa_passport_page', 'Visa Passport Page'),
+        ('vevo_check', 'VEVO Check'),
+        ('payslip', 'Payslip'),
+        ('bank_statement', 'Bank Statement'),
+        ('address_proof', 'Address Proof'),
+        ('passport', 'Passport'),
+        ('migration_intent', 'Migration Intent'),
+    ]
+
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+    eligibility_check = models.ForeignKey(EligibilityCheck, on_delete=models.CASCADE, related_name='documents')
+    document_type = models.CharField(max_length=20, choices=DOCUMENT_TYPES)
+    file = models.FileField(upload_to='eligibility_documents/%Y/%m/')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'eligibility_documents'
+        ordering = ['uploaded_at']
+
+    def __str__(self):
+        return f"{self.get_document_type_display()} for {self.eligibility_check}"

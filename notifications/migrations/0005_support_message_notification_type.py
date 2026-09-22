@@ -1,0 +1,18 @@
+# Generated manually for the support message notification type.
+
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('notifications', '0004_alter_notification_notification_type'),
+    ]
+
+    operations = [
+        migrations.AlterField(
+            model_name='notification',
+            name='notification_type',
+            field=models.CharField(choices=[('community_post', 'New Community Post'), ('community_message', 'New Community Message'), ('comment', 'Comment on Post'), ('like', 'Post Liked'), ('mention', 'You were Mentioned'), ('community_invite', 'Community Invite'), ('service_accepted', 'Service Accepted'), ('service_updated', 'Service Updated'), ('service_completed', 'Service Completed'), ('service_cancelled', 'Service Cancelled'), ('shop_inquiry', 'Shop Inquiry'), ('boost_approved', 'Boost Approved'), ('boost_expired', 'Boost Expired'), ('membership_expiry', 'Membership Expiring Soon'), ('membership_expired', 'Membership Expired'), ('pickup_reminder', 'Airport Pickup Reminder'), ('direct_message', 'Direct Message'), ('support_message', 'Support Message'), ('system', 'System Notification')], max_length=30),
+        ),
+    ]

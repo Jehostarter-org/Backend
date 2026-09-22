@@ -29,6 +29,7 @@ class Notification(models.Model):
         ('membership_expired','Membership Expired'),
         ('pickup_reminder',   'Airport Pickup Reminder'),
         ('direct_message',    'Direct Message'), 
+        ('support_message',   'Support Message'),
         ('system',            'System Notification'),
     ]
 

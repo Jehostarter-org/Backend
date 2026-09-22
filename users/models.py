@@ -61,6 +61,9 @@ class User(AbstractUser):
     ]
     migration_status = models.CharField(max_length=20, choices=MIGRATION_STATUS, blank=True)
 
+    # Presence — last heartbeat seen (used for "last seen" fallbacks).
+    last_seen = models.DateTimeField(null=True, blank=True)
+
     # Terms & conditions acceptance
     accepted_terms    = models.BooleanField(default=False)
     accepted_terms_at = models.DateTimeField(null=True, blank=True)

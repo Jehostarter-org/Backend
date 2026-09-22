@@ -209,6 +209,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             community_id=self.community_id,
             user=self.user,
             is_banned=False,
+            status='approved',
         ).exists()
 
     @database_sync_to_async
@@ -257,6 +258,7 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             user=self.user,
             role__in=['admin', 'moderator'],
             is_banned=False,
+            status='approved',
         ).exists()
 
         if not (is_own or is_admin):
@@ -275,3 +277,143 @@ class CommunityConsumer(AsyncWebsocketConsumer):
             except Exception:
                 pass
         return None
+
+    # ── Broadcast handlers (from REST views) ──────────────────────────────────
+
+    async def reaction_toggled(self, event):
+        await self.send(text_data=json.dumps({
+            'type':       'reaction_toggled',
+            'message_id': event['message_id'],
+            'reactions':  event['reactions'],
+        }))
+
+    async def member_joined(self, event):
+        await self.send(text_data=json.dumps({
+            'type':           'member_joined',
+            'user_id':        event['user_id'],
+            'username':       event['username'],
+            'avatar':         event.get('avatar'),
+            'member_count':   event.get('member_count'),
+        }))
+
+    async def member_left(self, event):
+        await self.send(text_data=json.dumps({
+            'type':         'member_left',
+            'user_id':      event['user_id'],
+            'username':     event['username'],
+            'member_count': event.get('member_count'),
+        }))
+
+    async def member_removed(self, event):
+        await self.send(text_data=json.dumps({
+            'type':         'member_removed',
+            'user_id':      event['user_id'],
+            'removed_by':   event['removed_by'],
+            'member_count': event.get('member_count'),
+        }))
+
+    async def community_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type':       'community_updated',
+            'community':  event['community'],
+        }))
+
+    async def community_deleted(self, event):
+        await self.send(text_data=json.dumps({
+            'type':         'community_deleted',
+            'community_id': event['community_id'],
+        }))
+
+
+class CommunityEventsConsumer(AsyncWebsocketConsumer):
+    """
+    Lightweight consumer for global community events.
+    Users connect to ws://<host>/ws/community/events/ to receive
+    community-created/deleted/updated events for the listing page.
+    """
+
+    async def connect(self):
+        token_str = self._get_token()
+        if not token_str:
+            await self.close(code=4001)
+            return
+
+        self.user = await self._get_user(token_str)
+        if not self.user:
+            await self.close(code=4001)
+            return
+
+        await self.channel_layer.group_add('community_lobby', self.channel_name)
+        await self.accept()
+
+        logger.info('[WS CommunityEvents] %s connected', self.user.username)
+
+    async def disconnect(self, code):
+        logger.info('[WS CommunityEvents] %s disconnected. code=%s', getattr(self, 'user', 'unknown'), code)
+        await self.channel_layer.group_discard('community_lobby', self.channel_name)
+
+    async def receive(self, text_data):
+        pass  # no client → server messages for this consumer
+
+    async def community_created(self, event):
+        await self.send(text_data=json.dumps({
+            'type':      'community_created',
+            'community': event['community'],
+        }))
+
+    async def community_deleted(self, event):
+        await self.send(text_data=json.dumps({
+            'type':         'community_deleted',
+            'community_id': event['community_id'],
+        }))
+
+    async def community_updated(self, event):
+        await self.send(text_data=json.dumps({
+            'type':      'community_updated',
+            'community': event['community'],
+        }))
+
+    async def community_message(self, event):
+        community_id = event.get('community_id')
+        if not community_id:
+            return
+        if not await self._is_member(community_id):
+            return
+        await self.send(text_data=json.dumps({
+            'type':              'community_message',
+            'id':                event['id'],
+            'community_id':      community_id,
+            'community_name':    event.get('community_name', ''),
+            'sender_username':   event.get('sender_username', ''),
+            'sender_avatar':     event.get('sender_avatar'),
+            'content':           event.get('content', ''),
+            'attachment_name':   event.get('attachment_name', ''),
+            'created_at':        event.get('created_at', ''),
+        }))
+
+    # ── Auth helpers ───────────────────────────────────────────────────────────
+
+    def _get_token(self):
+        qs = self.scope.get('query_string', b'').decode()
+        for part in qs.split('&'):
+            if part.startswith('token='):
+                return part[6:]
+        return None
+
+    @database_sync_to_async
+    def _get_user(self, token_str):
+        try:
+            data = AccessToken(token_str)
+            return User.objects.get(id=data['user_id'])
+        except Exception as e:
+            logger.warning('[WS CommunityEvents] auth failed: %s', e)
+            return None
+
+    @database_sync_to_async
+    def _is_member(self, community_id):
+        return CommunityMember.objects.filter(
+            community_id=community_id,
+            user_id=self.user.id,
+            status='approved',
+            is_banned=False,
+        ).exists()

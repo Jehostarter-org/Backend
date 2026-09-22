@@ -339,7 +339,7 @@ class ChaperoneServiceAdmin(admin.ModelAdmin):
         'id_short', 'service_request_link', 'help_type_badge', 
         'location', 'chaperone_info', 'status_badge'
     ]
-    list_filter = ['help_type']
+    list_filter = ['service_request__status']
     search_fields = ['location', 'service_request__requester__email']
     raw_id_fields = ['service_request', 'chaperone']
     readonly_fields = ['id']
@@ -370,8 +370,18 @@ class ChaperoneServiceAdmin(admin.ModelAdmin):
     service_request_link.short_description = 'Service'
     
     def help_type_badge(self, obj):
-        help_display = dict(models.ChaperoneService.HELP_TYPES).get(obj.help_type, obj.help_type)
-        return format_html('<span style="background-color: #3498db; color: white; padding: 2px 6px; border-radius: 3px;">{}</span>', help_display)
+        help_types = obj.help_type
+        if isinstance(help_types, str):
+            help_types = [help_types]
+        badges = [
+            format_html(
+                '<span style="background-color: #3498db; color: white; padding: 2px 6px; border-radius: 3px; margin-right: 3px;">{}</span>',
+                dict(models.ChaperoneService.HELP_TYPES).get(h, h)
+            )
+            for h in (help_types or [])
+            if h
+        ]
+        return format_html('{}', ''.join(badges)) if badges else '-'
     help_type_badge.short_description = 'Help Type'
     
     def chaperone_info(self, obj):
@@ -457,18 +467,18 @@ class TemporaryHousingAdmin(admin.ModelAdmin):
 class ServiceProviderProfileAdmin(admin.ModelAdmin):
     list_display = [
         'user_info', 'service_type_badge', 'location_display', 
-        'bio_short', 'is_active', 'registered_at'
+        'bio_short', 'approval_status', 'is_active', 'registered_at'
     ]
-    list_filter = ['service_type', 'country_code', 'is_active', 'registered_at']
+    list_filter = ['service_type', 'country_code', 'approval_status', 'is_active', 'registered_at']
     search_fields = ['user__email', 'user__username', 'city', 'bio']
     raw_id_fields = ['user']
     readonly_fields = ['id', 'registered_at']
     list_per_page = 30
-    list_editable = ['is_active']
+    list_editable = ['approval_status', 'is_active']
     
     fieldsets = (
         ('Provider Information', {
-            'fields': ('user', 'service_type', 'bio', 'is_active', 'registered_at')
+            'fields': ('user', 'service_type', 'bio', 'is_active', 'approval_status', 'rejection_reason', 'reviewed_by', 'reviewed_at', 'registered_at')
         }),
         ('Personal Details', {
             'fields': (
@@ -479,8 +489,9 @@ class ServiceProviderProfileAdmin(admin.ModelAdmin):
         }),
         ('Chaperone Details', {
             'fields': (
-                'sim_card_reference', 'tax_file_number_reference',
-                'offers_translation_service',
+                'sim_card_reference', 'phone_number', 'tax_file_number_reference',
+                'offers_translation_service', 'offers_registration_service',
+                'is_immigration_officer',
             ),
             'classes': ('collapse',),
             'description': 'These fields are specific to Chaperone service providers.',

@@ -453,3 +453,150 @@ class MembershipStatsAdmin(admin.ModelAdmin):
 # Uncomment to use the stats view instead of the regular admin
 # admin.site.unregister(models.UserMembership)
 # admin.site.register(models.UserMembership, MembershipStatsAdmin)
+
+
+# ─── Eligibility Check Admin ───────────────────────────────────────────────────
+
+class EligibilityStatusFilter(SimpleListFilter):
+    title = 'Eligibility Status'
+    parameter_name = 'status'
+
+    def lookups(self, request, model_admin):
+        return models.EligibilityCheck.STATUS_CHOICES
+
+    def queryset(self, request, queryset):
+        if self.value():
+            return queryset.filter(status=self.value())
+        return queryset
+
+
+@admin.register(models.EligibilityCheck)
+class EligibilityCheckAdmin(admin.ModelAdmin):
+    list_display = [
+        'user_link', 'pathway_badge', 'status_badge', 'documents_count',
+        'phone', 'email', 'destination', 'created_at'
+    ]
+    list_filter = [EligibilityStatusFilter, 'pathway', 'created_at']
+    search_fields = ['user__email', 'user__username', 'phone', 'email']
+    readonly_fields = ['id', 'created_at', 'updated_at', 'documents_list']
+    list_select_related = ['user']
+    date_hierarchy = 'created_at'
+
+    fieldsets = (
+        ('User & Pathway', {
+            'fields': ('user', 'pathway', 'status')
+        }),
+        ('Pathway A — Destination', {
+            'fields': ('visa_expiry',),
+            'classes': ('collapse',),
+        }),
+        ('Pathway B — Home Country', {
+            'fields': ('passport_expiry', 'migration_doc_type'),
+            'classes': ('collapse',),
+        }),
+        ('Contact & Destination', {
+            'fields': ('phone', 'email', 'destination_country', 'destination_city')
+        }),
+        ('Documents', {
+            'fields': ('documents_list',),
+        }),
+        ('Admin Review', {
+            'fields': ('rejection_reason', 'reviewed_at'),
+            'classes': ('collapse',),
+        }),
+        ('Metadata & System', {
+            'fields': ('metadata', 'id', 'created_at', 'updated_at'),
+            'classes': ('collapse',),
+        }),
+    )
+
+    def user_link(self, obj):
+        url = reverse('admin:users_user_change', args=[obj.user.id])
+        return format_html(
+            '<a href="{}" style="font-weight: bold;">{}</a>',
+            url, obj.user.email or obj.user.username
+        )
+    user_link.short_description = 'User'
+
+    def pathway_badge(self, obj):
+        label = 'Destination' if obj.pathway == 'a' else 'Home Country'
+        color = '#2d7a7a' if obj.pathway == 'a' else '#7a5a2d'
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold; font-size: 12px;">{}</span>',
+            color, label
+        )
+    pathway_badge.short_description = 'Pathway'
+
+    def status_badge(self, obj):
+        colors = {
+            'pending': '#95a5a6',
+            'processing': '#f39c12',
+            'approved': '#27ae60',
+            'conditionally_approved': '#2980b9',
+            'rejected': '#e74c3c',
+        }
+        color = colors.get(obj.status, '#95a5a6')
+        return format_html(
+            '<span style="background-color: {}; color: white; padding: 3px 8px; border-radius: 3px; font-weight: bold; font-size: 12px;">{}</span>',
+            color, obj.get_status_display()
+        )
+    status_badge.short_description = 'Status'
+
+    def documents_count(self, obj):
+        count = obj.documents.count()
+        return format_html('<strong>{}</strong>', count)
+    documents_count.short_description = 'Docs'
+
+    def destination(self, obj):
+        if obj.destination_country:
+            return f'{obj.destination_city or ""}, {obj.destination_country.upper()}'
+        return '-'
+    destination.short_description = 'Destination'
+
+    def documents_list(self, obj):
+        docs = obj.documents.all()
+        if not docs:
+            return format_html('<span style="color: #999;">No documents uploaded</span>')
+        items = []
+        for doc in docs:
+            items.append(
+                f'<li><a href="{doc.file.url}" target="_blank" style="color: #2d7a7a;">'
+                f'{doc.get_document_type_display()}</a> '
+                f'<span style="color: #999; font-size: 11px;">({doc.file.size / 1024:.0f} KB)</span></li>'
+            )
+        return format_html('<ul style="margin: 0; padding-left: 20px;">{}</ul>', ''.join(items))
+    documents_list.short_description = 'Uploaded Documents'
+
+    actions = ['approve_selected', 'reject_selected', 'mark_processing']
+
+    def approve_selected(self, request, queryset):
+        updated = queryset.update(status='approved')
+        self.message_user(request, f'{updated} eligibility checks approved.')
+    approve_selected.short_description = 'Mark as Approved'
+
+    def reject_selected(self, request, queryset):
+        updated = queryset.update(status='rejected')
+        self.message_user(request, f'{updated} eligibility checks rejected.')
+    reject_selected.short_description = 'Mark as Rejected'
+
+    def mark_processing(self, request, queryset):
+        updated = queryset.update(status='processing')
+        self.message_user(request, f'{updated} eligibility checks set to processing.')
+    mark_processing.short_description = 'Mark as Processing'
+
+
+@admin.register(models.EligibilityDocument)
+class EligibilityDocumentAdmin(admin.ModelAdmin):
+    list_display = ['document_type', 'eligibility_link', 'file_preview', 'uploaded_at']
+    list_filter = ['document_type', 'uploaded_at']
+    search_fields = ['eligibility_check__user__email', 'eligibility_check__id']
+    readonly_fields = ['id', 'uploaded_at']
+
+    def eligibility_link(self, obj):
+        url = reverse('admin:memberships_eligibilitycheck_change', args=[obj.eligibility_check.id])
+        return format_html('<a href="{}">{}</a>', url, obj.eligibility_check)
+    eligibility_link.short_description = 'Eligibility Check'
+
+    def file_preview(self, obj):
+        return format_html('<a href="{}" target="_blank">View File</a>', obj.file.url)
+    file_preview.short_description = 'File'

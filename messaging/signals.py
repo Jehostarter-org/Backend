@@ -19,16 +19,21 @@ def notify_recipient_on_new_message(sender, instance, created, **kwargs):
     preview     = instance.body[:60] if instance.body else '📎 Sent an attachment'
     sender_name = instance.sender.get_full_name() or instance.sender.email
 
-    # Deep-link the frontend directly to the conversation thread
-    link = f'/messages/{conversation.id}/'
+    # A support thread routes the user straight to /support; a normal DM goes to
+    # the community message thread. Any admin whose support reply reaches the
+    # customer should be surfaced as a support message notification.
+    is_support    = conversation.is_support()
+    notif_type    = 'support_message' if is_support else 'direct_message'
+    link          = '/support/' if is_support else f'/messages/{conversation.id}/'
+    title         = 'New support message' if is_support else f'New message from {sender_name}'
 
     try:
         from notifications.models import Notification
         notif = Notification.objects.create(
             recipient         = recipient,
             actor             = instance.sender,
-            notification_type = 'direct_message',
-            title             = f'New message from {sender_name}',
+            notification_type = notif_type,
+            title             = title,
             message           = preview,
             link              = link,
         )
@@ -45,7 +50,7 @@ def notify_recipient_on_new_message(sender, instance, created, **kwargs):
                 'type': 'new_notification',
                 'payload': {
                     'id':                str(notif.id),
-                    'notification_type': 'direct_message',
+                    'notification_type': notif_type,
                     'title':             notif.title,
                     'message':           notif.message,
                     'link':              notif.link,

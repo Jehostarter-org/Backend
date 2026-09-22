@@ -1,0 +1,15 @@
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+.vscode
+.idea
+node_modules
+.DS_Store
+media
+staticfiles
+*.log

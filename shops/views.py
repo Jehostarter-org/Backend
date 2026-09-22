@@ -23,6 +23,7 @@ from .serializers import (
     AdminShopApprovalListSerializer, AdminShopApprovalDetailSerializer,
     AdminApprovalActionSerializer, DocumentReviewSerializer,
     ShopDocumentSerializer, SavedListingSerializer,
+    AdminListingListItemSerializer,
 )
 
 # Default search radius
@@ -45,7 +46,7 @@ class IsListingOwnerOrReadOnly(permissions.BasePermission):
 
 def _point_from_user(user):
     """Returns the user's PostGIS Point or None."""
-    return user.location if user.is_authenticated and user.location else None
+    return user.location if user and user.is_authenticated and user.location else None
 
 
 def _country_scope_filter(user):
@@ -54,7 +55,7 @@ def _country_scope_filter(user):
     Gold members can see all countries; everyone else sees only their own.
     Unauthenticated users see all.
     """
-    if user.is_authenticated and user.membership_plan != 'gold' and user.current_country:
+    if user and user.is_authenticated and user.membership_plan != 'gold' and user.current_country:
         return Q(shop__country_code=user.current_country)
     return Q()
 
@@ -130,13 +131,19 @@ class NearbyShopsView(generics.ListAPIView):
 
     def list(self, request, *args, **kwargs):
         user      = request.user
-        radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
+        try:
+            radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
+        except (ValueError, TypeError):
+            radius_km = DEFAULT_RADIUS_KM
 
         lat = request.query_params.get('lat')
         lon = request.query_params.get('lon')
 
         if lat and lon:
-            point = Point(float(lon), float(lat), srid=4326)
+            try:
+                point = Point(float(lon), float(lat), srid=4326)
+            except (ValueError, TypeError):
+                return Response({'error': 'Invalid coordinates'}, status=400)
         else:
             point = _point_from_user(user)
 
@@ -156,7 +163,7 @@ class NearbyShopsView(generics.ListAPIView):
             countries = [c for c in [user.current_country, user.destination_country] if c]
             qs = base_qs.filter(country_code__in=countries) if countries else base_qs
 
-        qs = qs.select_related('owner')
+        qs = qs.select_related('owner').prefetch_related('approval_request')
         serializer = self.get_serializer(qs, many=True)
         return Response(serializer.data)
 
@@ -181,11 +188,18 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
         request   = self.request
         user      = request.user if request.user.is_authenticated else None
         qs        = ShopListing.objects.select_related('shop', 'category').prefetch_related('images').filter(is_available=True, is_deleted=False)
-        radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
+        try:
+            radius_km = float(request.query_params.get('radius', DEFAULT_RADIUS_KM))
+        except (ValueError, TypeError):
+            radius_km = DEFAULT_RADIUS_KM
 
         category = request.query_params.get('category')
         if category:
             qs = qs.filter(category__slug=category)
+
+        subcategory = request.query_params.get('subcategory')
+        if subcategory:
+            qs = qs.filter(subcategory__iexact=subcategory)
 
         country = request.query_params.get('country')
         if country:
@@ -194,9 +208,12 @@ class ShopListingListCreateView(generics.ListCreateAPIView):
         lat = request.query_params.get('lat')
         lon = request.query_params.get('lon')
         if lat and lon:
-            point    = Point(float(lon), float(lat), srid=4326)
-            shop_ids = _nearby_shop_ids(point, radius_km)
-            return qs.filter(shop__id__in=shop_ids)
+            try:
+                point    = Point(float(lon), float(lat), srid=4326)
+                shop_ids = _nearby_shop_ids(point, radius_km)
+                return qs.filter(shop__id__in=shop_ids)
+            except (ValueError, TypeError):
+                pass
 
         qs = qs.filter(_country_scope_filter(user))
 
@@ -319,6 +336,7 @@ class ShopListingDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset           = ShopListing.objects.all()
     serializer_class   = ShopListingSerializer
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsListingOwnerOrReadOnly]
+    parser_classes     = [MultiPartParser, FormParser, JSONParser]
 
 
 class BoostListingView(APIView):
@@ -653,3 +671,45 @@ class AdminShopStatsView(APIView):
                 'pending_review': ShopDocument.objects.filter(status='pending').count(),
             },
         })
+
+
+class AdminListingListView(generics.ListAPIView):
+    """Admin: List every item (listing) posted in shops.
+
+    GET /api/shops/admin/items/?q=<search>&category=<slug>&status=<active|inactive>
+    """
+    serializer_class   = AdminListingListItemSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        qs = ShopListing.objects.select_related('shop', 'shop__owner', 'category').prefetch_related('images').order_by('-created_at')
+
+        q = self.request.query_params.get('q')
+        if q:
+            qs = qs.filter(
+                Q(title__icontains=q) | Q(shop__name__icontains=q) |
+                Q(shop__owner__email__icontains=q) | Q(shop__owner__username__icontains=q)
+            )
+
+        category = self.request.query_params.get('category')
+        if category:
+            qs = qs.filter(category__slug=category)
+
+        status_filter = self.request.query_params.get('status')
+        if status_filter == 'active':
+            qs = qs.filter(is_available=True)
+        elif status_filter == 'inactive':
+            qs = qs.filter(is_available=False)
+
+        return qs
+
+
+class AdminListingDeleteView(APIView):
+    """Admin: Delete a shop item. DELETE /api/shops/admin/items/<id>/"""
+    permission_classes = [IsAdminUser]
+
+    def delete(self, request, pk):
+        listing = get_object_or_404(ShopListing, pk=pk)
+        title = listing.title
+        listing.delete()
+        return Response({'message': f'Item "{title}" deleted.'})

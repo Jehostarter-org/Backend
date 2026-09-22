@@ -1,0 +1,119 @@
+{% extends "portal/base.html" %}
+
+{% block title %}Support inbox — Jehostarter Admin{% endblock %}
+
+{% block body %}
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">J</span>
+      <strong>Jehostarter</strong>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="{% url 'portal_dashboard' %}" class="nav-link">Dashboard</a>
+      <a href="{% url 'portal_shops' %}" class="nav-link">Shop items</a>
+      <a href="{% url 'portal_support' %}" class="nav-link active">Support inbox</a>
+      <a href="{% url 'portal_providers' %}" class="nav-link">Provider approvals</a>
+      <a href="{% url 'portal_eligibility' %}" class="nav-link">Eligibility approvals</a>
+      <a href="{% url 'portal_communities' %}" class="nav-link">Community members</a>
+      <a href="{% url 'portal_users' %}" class="nav-link">Users</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="admin-user" class="admin-user"></div>
+      <button id="logout-btn" class="btn btn-ghost btn-small">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="page-header">
+      <div>
+        <h1>Support inbox</h1>
+        <p>Help requests from users. Pick one and reply — answers appear in the user's own chat instantly.</p>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <div class="support-search-wrap">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"></circle>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+          </svg>
+          <input id="support-search" class="support-search" type="search" placeholder="Search customer or subject…" />
+        </div>
+        <button id="refresh-support" class="btn btn-secondary">Refresh</button>
+      </div>
+    </header>
+
+    <section class="stats-grid" style="margin-bottom:20px;">
+      <article class="stat-card">
+        <span class="stat-label">Open requests</span>
+        <strong id="support-stat-open" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Action needed</span>
+        <strong id="support-stat-unread" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Unresolved</span>
+        <strong id="support-stat-unresolved" class="stat-value">—</strong>
+      </article>
+    </section>
+
+    <div id="support-error" class="alert alert-error hidden" style="margin-bottom:16px;"></div>
+
+    <div class="support-layout">
+      <aside class="support-pane">
+        <div class="support-pane-head">
+          <strong>Conversations</strong>
+          <span id="support-pane-count" class="shop-meta" style="font-size:12px;"></span>
+        </div>
+        <div id="support-loading" class="loading">Loading conversations…</div>
+        <div id="support-empty" class="empty-state hidden">
+          <h2>No support requests</h2>
+          <p>When users open the Request Support chat, their conversations appear here.</p>
+        </div>
+        <div id="support-list" class="support-list"></div>
+      </aside>
+
+      <section class="support-chat">
+        <header class="support-chat-head">
+          <span id="chat-avatar" class="support-chat-avatar">?</span>
+          <div class="support-chat-meta">
+            <div class="support-chat-name" id="chat-title">Select a conversation</div>
+            <div class="support-chat-sub" id="chat-sub">Pick a customer from the list to read and reply.</div>
+          </div>
+          <div class="support-chat-status">
+            <span id="chat-dot" class="support-dot"></span>
+            <span id="chat-status-text">Idle</span>
+          </div>
+        </header>
+
+        <div id="chat-empty" class="support-wallpaper empty">
+          <div class="support-empty-chat">
+            <strong>Support inbox</strong>
+            <br />
+            Choose a customer on the left. Your reply shows up in their chat instantly.
+          </div>
+        </div>
+
+        <div id="chat-messages" class="support-wallpaper hidden"></div>
+
+        <div id="chat-compose" class="support-compose hidden">
+          <textarea id="reply-input" rows="1" placeholder="Type a reply…"></textarea>
+          <button id="reply-send" class="support-send-btn" title="Send reply" aria-label="Send reply">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+              <path d="M3.6 2.9 21.5 12 3.6 21.1l1.6-7L10.4 12 5.2 9.9z" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  Portal.requireAuth();
+  Portal.initShell();
+  Portal.initSupportPage();
+</script>
+{% endblock %}

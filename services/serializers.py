@@ -46,9 +46,15 @@ class HomeInspectionSerializer(serializers.ModelSerializer):
 
 
 class ChaperoneServiceSerializer(serializers.ModelSerializer):
+    help_type = serializers.ListField(
+        child=serializers.ChoiceField(choices=ChaperoneService.HELP_TYPES),
+        required=True,
+        allow_empty=False,
+    )
+
     class Meta:
         model = ChaperoneService
-        fields = ['id', 'help_type', 'location']
+        fields = ['id', 'help_type', 'location', 'address']
 
 
 class TemporaryHousingSerializer(serializers.ModelSerializer):
@@ -135,6 +141,7 @@ class ServiceRequestSerializer(serializers.ModelSerializer):
             'total_trips': profile.total_trips,
             'phone': user.phone or '',
             'emergency_contact': profile.emergency_contact or '',
+            'is_verified': profile.approval_status == 'approved',
         }
 
     def get_review(self, obj):
@@ -198,12 +205,14 @@ class ServiceReviewSerializer(serializers.ModelSerializer):
 
 class ServiceProviderProfileSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
+    user_email = serializers.EmailField(source='user.email', read_only=True)
 
     class Meta:
         model = ServiceProviderProfile
         fields = [
-            'id', 'user', 'service_type', 'country_code', 'city', 'bio',
-            'is_active', 'registered_at',
+            'id', 'user', 'user_email', 'service_type', 'country_code', 'city', 'bio',
+            'is_active', 'approval_status', 'rejection_reason', 'reviewed_at',
+            'registered_at',
             'first_name', 'last_name', 'national_identity_number',
             'emergency_contact',
             'license_number', 'license_state_country',
@@ -219,13 +228,29 @@ class ServiceProviderProfileSerializer(serializers.ModelSerializer):
             'max_service_distance_km', 'home_base_location',
             'home_base_latitude', 'home_base_longitude',
             'sim_card_reference', 'tax_file_number_reference',
-            'offers_translation_service',
+            'phone_number',
+            'offers_translation_service', 'offers_registration_service',
+            'is_immigration_officer',
             'full_name',
         ]
         read_only_fields = [
-            'id', 'user', 'is_active', 'registered_at', 'total_trips', 'rating',
+            'id', 'user', 'is_active', 'approval_status', 'rejection_reason',
+            'reviewed_at', 'registered_at', 'total_trips', 'rating',
             'total_reviews',
         ]
+
+    def get_full_name(self, obj):
+        if obj.first_name and obj.last_name:
+            return f"{obj.first_name} {obj.last_name}"
+        return obj.user.get_full_name() or obj.user.username
+
+
+class ImmigrationOfficerSerializer(serializers.ModelSerializer):
+    full_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ServiceProviderProfile
+        fields = ['id', 'full_name', 'phone_number', 'city', 'country_code']
 
     def get_full_name(self, obj):
         if obj.first_name and obj.last_name:

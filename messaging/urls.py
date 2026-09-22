@@ -27,4 +27,10 @@ urlpatterns = [
 
     # Mark all messages in thread as read
     path('conversations/<int:conversation_id>/read/', views.mark_read, name='mark-read'),
+
+    # Support — open/resume the current user's support thread
+    path('support/start/', views.SupportStartView.as_view(), name='support-start'),
+
+    # Support — admin portal inbox (staff only)
+    path('support/inbox/', views.SupportInboxView.as_view(), name='support-inbox'),
 ]

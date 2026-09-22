@@ -22,7 +22,8 @@ class Community(models.Model):
     creator      = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_communities')
     country_code = models.CharField(max_length=2, blank=True)
     visibility   = models.CharField(max_length=10, choices=VISIBILITY, default='public')
-    cover_image  = models.ImageField(upload_to='community_covers/', null=True, blank=True)
+    require_approval = models.BooleanField(default=False, help_text='Require admin approval for new members')
+    cover_image  = models.ImageField(upload_to='community_attachments/', null=True, blank=True)
     is_active    = models.BooleanField(default=True)
     purpose      = models.TextField(blank=True)
     rules        = models.TextField(blank=True)
@@ -50,13 +51,22 @@ class CommunityMember(models.Model):
         ('admin',     'Admin'),
     ]
 
+    STATUSES = [
+        ('pending',  'Pending'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+
     community  = models.ForeignKey(Community, on_delete=models.CASCADE, related_name='members')
     user       = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='community_memberships')
     role       = models.CharField(max_length=15, choices=ROLES, default='member')
+    status     = models.CharField(max_length=10, choices=STATUSES, default='approved')
     is_banned  = models.BooleanField(default=False)
     banned_at  = models.DateTimeField(null=True, blank=True)
-    ban_reason = models.TextField(blank=True)
-    joined_at  = models.DateTimeField(auto_now_add=True)
+    ban_reason  = models.TextField(blank=True)
+    joined_at   = models.DateTimeField(auto_now_add=True)
+    approved_at = models.DateTimeField(null=True, blank=True,
+                                       help_text='When the member was accepted into the community by an admin')
 
     class Meta:
         db_table = 'community_members'
@@ -266,6 +276,7 @@ class Message(models.Model):
     attachment_type = models.CharField(max_length=100, blank=True)
     attachment_size = models.PositiveIntegerField(default=0)
     is_deleted      = models.BooleanField(default=False)
+    reactions       = models.JSONField(default=dict, blank=True)
     created_at      = models.DateTimeField(auto_now_add=True)
 
     class Meta:

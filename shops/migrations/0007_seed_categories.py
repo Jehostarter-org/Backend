@@ -11,6 +11,7 @@ DEFAULT_CATEGORIES = [
     ('Baby & Kids', 'baby-kids', 'baby'),
     ('Books', 'books', 'book'),
     ('Equipment & Tools', 'equipment-tools', 'wrench'),
+    ('Other', 'other', 'boxes'),
 ]
 
 

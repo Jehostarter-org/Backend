@@ -1,0 +1,104 @@
+{% extends "portal/base.html" %}
+
+{% block title %}Provider Approvals — Jehostarter Admin{% endblock %}
+
+{% block body %}
+<div class="layout">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-mark">J</span>
+      <strong>Jehostarter</strong>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="{% url 'portal_dashboard' %}" class="nav-link">Dashboard</a>
+      <a href="{% url 'portal_shops' %}" class="nav-link">Shop items</a>
+      <a href="{% url 'portal_support' %}" class="nav-link">Support inbox</a>
+      <a href="{% url 'portal_providers' %}" class="nav-link active">Provider approvals</a>
+      <a href="{% url 'portal_eligibility' %}" class="nav-link">Eligibility approvals</a>
+      <a href="{% url 'portal_communities' %}" class="nav-link">Community members</a>
+      <a href="{% url 'portal_users' %}" class="nav-link">Users</a>
+    </nav>
+    <div class="sidebar-footer">
+      <div id="admin-user" class="admin-user"></div>
+      <button id="logout-btn" class="btn btn-ghost btn-small">Sign out</button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <header class="page-header">
+      <div>
+        <h1>Provider approvals</h1>
+        <p>Review driver and chaperone registrations and approve or reject them.</p>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+          <select id="status-filter" class="btn btn-secondary" style="width:auto;">
+            <option value="">All statuses</option>
+            <option value="pending">Pending</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          <select id="service-filter" class="btn btn-secondary" style="width:auto;">
+            <option value="">All types</option>
+            <option value="airport_pickup">Drivers</option>
+            <option value="chaperone">Chaperones</option>
+          </select>
+          <button id="refresh-providers" class="btn btn-secondary">Refresh</button>
+        </div>
+    </header>
+
+    <div class="stats-grid" style="margin-bottom:20px;">
+      <article class="stat-card">
+        <span class="stat-label">Pending approval</span>
+        <strong id="stat-pending" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Approved</span>
+        <strong id="stat-approved" class="stat-value">—</strong>
+      </article>
+      <article class="stat-card">
+        <span class="stat-label">Rejected</span>
+        <strong id="stat-rejected" class="stat-value">—</strong>
+      </article>
+    </div>
+
+    <div id="providers-error" class="alert alert-error hidden"></div>
+    <div id="providers-loading" class="loading">Loading provider approvals…</div>
+    <div id="providers-empty" class="empty-state hidden">
+      <h2>No providers found</h2>
+      <p>Driver and chaperone registrations will appear here once users apply.</p>
+    </div>
+    <div id="providers-list" class="shop-list"></div>
+  </main>
+</div>
+
+<dialog id="provider-modal" class="modal">
+  <form method="dialog" class="modal-panel">
+    <header class="modal-header">
+      <div>
+        <h2 id="modal-provider-name">Provider details</h2>
+        <p id="modal-provider-meta"></p>
+      </div>
+      <button type="button" class="btn btn-ghost btn-small" id="modal-close">Close</button>
+    </header>
+    <div id="modal-body" class="modal-body"></div>
+    <footer class="modal-footer">
+      <label class="notes-field">
+        Notes / rejection reason
+        <textarea id="modal-notes" rows="3" placeholder="Required for rejection. Optional for approval."></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-danger" id="modal-reject">Reject</button>
+        <button type="button" class="btn btn-primary" id="modal-approve">Approve</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  Portal.requireAuth();
+  Portal.initShell();
+  Portal.initProvidersPage();
+</script>
+{% endblock %}

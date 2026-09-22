@@ -183,15 +183,29 @@ class ChaperoneService(models.Model):
     id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
 
     HELP_TYPES = [
-        ('tax_file',     'Tax File Number (TFN)'),
-        ('registration', 'General Registration'),
-        ('bank_account', 'Bank Account Opening'),
-        ('other',        'Other'),
+        ('arrival',            'Arrival'),
+        ('housing',            'Housing'),
+        ('administration',     'Administration'),
+        ('employment',         'Employment'),
+        ('settlement',         'Settlement'),
+        ('appointments',       'Appointments'),
+        ('transport',          'Transport'),
+        ('education',          'Education'),
+        ('digital',            'Digital'),
+        ('shopping',           'Shopping'),
+        ('communication',      'Communication'),
+        ('community',          'Community'),
+        ('local_orientation',  'Local Orientation'),
+        ('moving',             'Moving'),
+        ('family_settlement',  'Family Settlement'),
+        ('business_setup',     'Business Setup'),
+        ('general_errands',    'General Errands'),
     ]
 
     service_request = models.OneToOneField(ServiceRequest, on_delete=models.CASCADE, related_name='chaperone_details')
-    help_type       = models.CharField(max_length=20, choices=HELP_TYPES)
+    help_type       = models.JSONField(default=list, blank=True)
     location        = models.CharField(max_length=200, blank=True)
+    address         = models.TextField(blank=True, null=True, help_text="Full street address where assistance is needed")
     chaperone       = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='chaperone_jobs'
@@ -256,6 +270,20 @@ class ServiceProviderProfile(models.Model):
     is_active    = models.BooleanField(default=True)
     registered_at = models.DateTimeField(auto_now_add=True)
 
+    # ── Approval Workflow ────────────────────────────────────────────────────
+    APPROVAL_STATUS = [
+        ('pending',  'Pending Approval'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+    ]
+    approval_status  = models.CharField(max_length=10, choices=APPROVAL_STATUS, default='pending')
+    rejection_reason = models.TextField(blank=True, help_text="Reason for rejection (if rejected)")
+    reviewed_by      = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='reviewed_provider_profiles'
+    )
+    reviewed_at      = models.DateTimeField(null=True, blank=True)
+
     # ── Personal Information ──────────────────────────────────────────────────
     first_name = models.CharField(max_length=100, blank=True)
     last_name = models.CharField(max_length=100, blank=True)
@@ -315,8 +343,11 @@ class ServiceProviderProfile(models.Model):
 
     # ── Chaperone-specific Fields ────────────────────────────────────────────
     sim_card_reference = models.CharField(max_length=50, blank=True, help_text="SIM card registration reference number")
+    phone_number = models.CharField(max_length=20, blank=True, help_text="Contact phone number of the chaperone")
     tax_file_number_reference = models.CharField(max_length=50, blank=True, help_text="Tax File Number (TFN) reference")
     offers_translation_service = models.BooleanField(default=False, help_text="Can provide translation services")
+    offers_registration_service = models.BooleanField(default=False, help_text="Can help with all forms of registration")
+    is_immigration_officer = models.BooleanField(default=False, help_text="Currently or previously worked as an immigration officer")
 
     # ── Driver Profile Photo ──────────────────────────────────────────────────
     profile_photo = models.ImageField(

@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from django.utils.text import slugify
 from django.db import transaction
 from django.db.models import Exists, OuterRef, Q
+from django.db.models.functions import Coalesce
 import uuid
 from .models import Community, CommunityMember, Post, Comment, PostLike, PostReport, Message
 from .message_notifications import notify_community_members
@@ -19,17 +20,20 @@ from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings as django_settings
 from .models import CommunityInvite
+from .broadcast import broadcast_to_community, broadcast_global_event, broadcast_to_user
+from shops.models import ShopListing
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _is_community_admin(user, community_id):
-    """Return True if user has admin or moderator role in the community."""
+    """Return True if user has admin or moderator role in the community (approved only)."""
     return CommunityMember.objects.filter(
         community_id=community_id,
         user=user,
         role__in=['admin', 'moderator'],
         is_banned=False,
+        status='approved',
     ).exists()
 
 
@@ -77,12 +81,16 @@ class CommunityListCreateView(generics.ListCreateAPIView):
             .select_related('creator')
             .prefetch_related('members')
         )
+        country = (self.request.query_params.get('country') or '').strip().upper()
+        if country:
+            qs = qs.filter(country_code=country)
         user = self.request.user
         if user.is_authenticated:
             membership = CommunityMember.objects.filter(
                 community_id=OuterRef('pk'),
                 user=user,
                 is_banned=False,
+                status='approved',
             )
             qs = qs.annotate(
                 _is_member=Exists(membership),
@@ -98,8 +106,12 @@ class CommunityListCreateView(generics.ListCreateAPIView):
         name      = serializer.validated_data['name']
         slug      = slugify(name) + '-' + str(uuid.uuid4())[:8]
         community = serializer.save(creator=user, slug=slug, country_code=user.current_country or '', is_active=True)
-        CommunityMember.objects.create(community=community, user=user, role='admin')
+        CommunityMember.objects.create(community=community, user=user, role='admin', approved_at=timezone.now())
         Community.objects.filter(pk=community.pk).update(member_count=1)
+
+        # Broadcast to all connected clients
+        data = CommunitySerializer(community, context={'request': self.request}).data
+        broadcast_global_event('community_created', {'community': data})
 
 
 class MyCommunitiesListView(generics.ListAPIView):
@@ -116,6 +128,7 @@ class MyCommunitiesListView(generics.ListAPIView):
         member_ids = CommunityMember.objects.filter(
             user=user,
             is_banned=False,
+            status='approved',
         ).values_list('community_id', flat=True)
 
         admin_membership = CommunityMember.objects.filter(
@@ -123,6 +136,7 @@ class MyCommunitiesListView(generics.ListAPIView):
             user=user,
             role__in=['admin', 'moderator'],
             is_banned=False,
+            status='approved',
         )
         return (
             Community.objects
@@ -157,6 +171,18 @@ class CommunityDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsCommunityAdminOrReadOnly]
     parser_classes     = [MultiPartParser, FormParser, JSONParser]
 
+    def perform_update(self, serializer):
+        super().perform_update(serializer)
+        data = CommunitySerializer(serializer.instance, context={'request': self.request}).data
+        broadcast_to_community(str(serializer.instance.pk), 'community_updated', {'community': data})
+        broadcast_global_event('community_updated', {'community': data})
+
+    def perform_destroy(self, instance):
+        community_id = str(instance.pk)
+        super().perform_destroy(instance)
+        broadcast_to_community(community_id, 'community_deleted', {'community_id': community_id})
+        broadcast_global_event('community_deleted', {'community_id': community_id})
+
 
 class JoinCommunityView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -166,23 +192,65 @@ class JoinCommunityView(APIView):
             community = Community.objects.get(pk=pk, is_active=True)
         except Community.DoesNotExist:
             return Response({'detail': 'Community not found.'}, status=404)
-        member, created = CommunityMember.objects.get_or_create(community=community, user=request.user)
-        if not created:
+
+        existing = CommunityMember.objects.filter(community=community, user=request.user).first()
+        if existing:
+            if existing.status == 'pending':
+                return Response({'detail': 'Request already pending.'}, status=400)
+            if existing.is_banned:
+                return Response({'detail': 'You are banned from this community.'}, status=403)
             return Response({'detail': 'Already a member.'}, status=400)
-        # FIX: update member_count after a new member joins
-        Community.objects.filter(pk=pk).update(
-            member_count=CommunityMember.objects.filter(community_id=pk).count()
-        )
+
+        if community.require_approval:
+            member = CommunityMember.objects.create(
+                community=community, user=request.user, status='pending',
+            )
+            # notify admins
+            admin_ids = CommunityMember.objects.filter(
+                community=community, role__in=['admin', 'moderator'], is_banned=False,
+            ).values_list('user_id', flat=True)
+            for uid in admin_ids:
+                broadcast_to_user(str(uid), 'join_request', {
+                    'community_id': str(community.pk),
+                    'community_name': community.name,
+                    'user_id': str(request.user.pk),
+                    'username': request.user.username,
+                })
+            return Response({'detail': 'Request sent. Waiting for admin approval.', 'status': 'pending'})
+
+        member = CommunityMember.objects.create(community=community, user=request.user, status='approved', approved_at=timezone.now())
+        member_count = CommunityMember.objects.filter(community_id=pk, status='approved').count()
+        Community.objects.filter(pk=pk).update(member_count=member_count)
+
+        avatar_url = None
+        try:
+            avatar_field = getattr(request.user, 'avatar', None) or getattr(request.user, 'profile_picture', None)
+            if avatar_field:
+                avatar_url = avatar_field.url
+        except Exception:
+            pass
+        broadcast_to_community(str(pk), 'member_joined', {
+            'user_id': str(request.user.pk),
+            'username': request.user.username,
+            'avatar': avatar_url,
+            'member_count': member_count,
+        })
+
         return Response({'detail': 'Joined community.'})
 
 
 class LeaveCommunityView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
     def delete(self, request, pk):
         CommunityMember.objects.filter(community_id=pk, user=request.user).delete()
-        # Keep member_count in sync on leave
-        Community.objects.filter(pk=pk).update(
-            member_count=CommunityMember.objects.filter(community_id=pk).count()
-        )
+        member_count = CommunityMember.objects.filter(community_id=pk).count()
+        Community.objects.filter(pk=pk).update(member_count=member_count)
+        broadcast_to_community(str(pk), 'member_left', {
+            'user_id': str(request.user.pk),
+            'username': request.user.username,
+            'member_count': member_count,
+        })
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -191,8 +259,118 @@ class CommunityMembersView(generics.ListAPIView):
 
     def get_queryset(self):
         return CommunityMember.objects.filter(
-            community_id=self.kwargs['pk']
+            community_id=self.kwargs['pk'], status='approved',
         ).select_related('user')
+
+
+class PendingMembersView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        if not _is_community_admin(request.user, pk):
+            return Response({'detail': 'Admin access required.'}, status=403)
+        members = CommunityMember.objects.filter(
+            community_id=pk, status='pending',
+        ).select_related('user')
+        data = []
+        for m in members:
+            avatar_url = None
+            try:
+                av = getattr(m.user, 'avatar', None) or getattr(m.user, 'profile_picture', None)
+                if av and av.storage.exists(av.name):
+                    avatar_url = request.build_absolute_uri(av.url)
+            except Exception:
+                pass
+            data.append({
+                'id': m.id,
+                'user_id': str(m.user.pk),
+                'username': m.user.username,
+                'profile_picture': avatar_url,
+                'requested_at': m.joined_at.isoformat(),
+            })
+        return Response(data)
+
+
+class ApproveMemberView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk, member_pk):
+        if not _is_community_admin(request.user, pk):
+            return Response({'detail': 'Admin access required.'}, status=403)
+        try:
+            member = CommunityMember.objects.get(pk=member_pk, community_id=pk, status='pending')
+        except CommunityMember.DoesNotExist:
+            return Response({'detail': 'Pending request not found.'}, status=404)
+        member.status = 'approved'
+        member.approved_at = timezone.now()
+        member.save(update_fields=['status', 'approved_at'])
+
+        member_count = CommunityMember.objects.filter(community_id=pk, status='approved').count()
+        Community.objects.filter(pk=pk).update(member_count=member_count)
+
+        broadcast_to_community(str(pk), 'member_joined', {
+            'user_id': str(member.user_id),
+            'username': member.user.username,
+            'member_count': member_count,
+        })
+        broadcast_to_user(str(member.user_id), 'join_approved', {
+            'community_id': str(pk),
+            'community_name': Community.objects.get(pk=pk).name,
+        })
+        return Response({'detail': 'Member approved.'})
+
+
+class RejectMemberView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk, member_pk):
+        if not _is_community_admin(request.user, pk):
+            return Response({'detail': 'Admin access required.'}, status=403)
+        try:
+            member = CommunityMember.objects.get(pk=member_pk, community_id=pk, status='pending')
+        except CommunityMember.DoesNotExist:
+            return Response({'detail': 'Pending request not found.'}, status=404)
+        member.status = 'rejected'
+        member.save(update_fields=['status'])
+        broadcast_to_user(str(member.user_id), 'join_rejected', {
+            'community_id': str(pk),
+            'community_name': Community.objects.get(pk=pk).name,
+        })
+        return Response({'detail': 'Request rejected.'})
+
+
+class AdminCommunityMembershipListView(APIView):
+    """
+    GET /api/community/admin/memberships/ — staff only.
+    Live view of approved community memberships for the super-admin portal,
+    including when each person was accepted into the group (approved_at).
+    """
+    permission_classes = [permissions.IsAdminUser]
+    pagination_class   = None
+
+    def get(self, request):
+        members = (
+            CommunityMember.objects
+            .filter(status='approved')
+            .select_related('user', 'community')
+            .annotate(accepted_at=Coalesce('approved_at', 'joined_at'))
+            .order_by('-accepted_at')
+        )
+        data = []
+        for m in members:
+            data.append({
+                'id':             m.id,
+                'community_id':   str(m.community_id),
+                'community_name': m.community.name,
+                'user_id':        str(m.user_id),
+                'username':       m.user.username,
+                'email':          m.user.email or '',
+                'role':           m.role,
+                'status':         m.status,
+                'requested_at':   m.joined_at.isoformat(),
+                'approved_at':    m.approved_at.isoformat() if m.approved_at else None,
+            })
+        return Response(data)
 
 
 # ── Post views ────────────────────────────────────────────────────────────────
@@ -205,9 +383,9 @@ class PostListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         community = Community.objects.get(pk=self.kwargs['pk'])
-        if not community.members.filter(user=self.request.user).exists():
+        if not community.members.filter(user=self.request.user, status='approved', is_banned=False).exists():
             from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied('You must be a member to post.')
+            raise PermissionDenied('You must be an approved member to post.')
         serializer.save(author=self.request.user, community=community)
 
 
@@ -252,7 +430,7 @@ class MyCommunityFeedView(generics.ListAPIView):
 
     def get_queryset(self):
         user   = self.request.user
-        joined = CommunityMember.objects.filter(user=user).values_list('community_id', flat=True)
+        joined = CommunityMember.objects.filter(user=user, status='approved', is_banned=False).values_list('community_id', flat=True)
         return Post.objects.filter(community_id__in=joined, is_approved=True, is_deleted=False)
 
 
@@ -272,10 +450,11 @@ class CommunityMessageHistoryView(generics.ListCreateAPIView):
             community_id=community_id,
             user=self.request.user,
             is_banned=False,
+            status='approved',
         ).exists()
         if not is_member:
             from rest_framework.exceptions import PermissionDenied
-            raise PermissionDenied('You must be a member to access messages.')
+            raise PermissionDenied('You must be an approved member to access messages.')
 
     def get_queryset(self):
         community_id = self.kwargs['pk']
@@ -304,6 +483,28 @@ class CommunityMessageHistoryView(generics.ListCreateAPIView):
             attachment_size=getattr(attachment, 'size', 0) if attachment else 0,
         )
         notify_community_members(message)
+
+
+class CommunityLiveActivityView(generics.ListAPIView):
+    """
+    GET /api/community/messages/activity/ — latest chat messages across all
+    communities the user belongs to, newest-first. Powers the dashboard
+    "Community Live Activity" widget.
+    """
+    serializer_class   = MessageSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user   = self.request.user
+        joined = CommunityMember.objects.filter(
+            user=user, status='approved', is_banned=False
+        ).values_list('community_id', flat=True)
+        return (
+            Message.objects
+            .filter(community_id__in=joined, is_deleted=False)
+            .select_related('sender')
+            .order_by('-created_at')[:30]
+        )
 
 
 class DeleteMessageView(APIView):
@@ -341,6 +542,47 @@ class DeleteMessageView(APIView):
         message.save(update_fields=['is_deleted'])
         return Response(status=status.HTTP_204_NO_CONTENT)
 
+class ToggleReactionView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, community_pk, message_pk):
+        try:
+            message = Message.objects.get(
+                pk=message_pk,
+                community_id=community_pk,
+                is_deleted=False,
+            )
+        except Message.DoesNotExist:
+            return Response({'detail': 'Message not found.'}, status=404)
+
+        emoji = request.data.get('emoji', '').strip()
+        if not emoji:
+            return Response({'detail': 'Emoji is required.'}, status=400)
+
+        user_id = str(request.user.pk)
+        reactions = dict(message.reactions or {})
+        users = reactions.get(emoji, [])
+
+        if user_id in users:
+            users.remove(user_id)
+            if not users:
+                reactions.pop(emoji, None)
+            else:
+                reactions[emoji] = users
+            message.reactions = reactions
+            message.save(update_fields=['reactions'])
+        else:
+            reactions.setdefault(emoji, []).append(user_id)
+            message.reactions = reactions
+            message.save(update_fields=['reactions'])
+
+        broadcast_to_community(str(community_pk), 'reaction_toggled', {
+            'message_id': str(message_pk),
+            'reactions': message.reactions,
+        })
+
+        return Response({'reactions': message.reactions})
+
 class RemoveMemberView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
@@ -352,10 +594,13 @@ class RemoveMemberView(APIView):
         ).delete()
         if not deleted:
             return Response({'detail': 'Member not found.'}, status=404)
-        # Update member count
-        Community.objects.filter(pk=pk).update(
-            member_count=CommunityMember.objects.filter(community_id=pk).count()
-        )
+        member_count = CommunityMember.objects.filter(community_id=pk).count()
+        Community.objects.filter(pk=pk).update(member_count=member_count)
+        broadcast_to_community(str(pk), 'member_removed', {
+            'user_id': str(user_pk),
+            'removed_by': str(request.user.pk),
+            'member_count': member_count,
+        })
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -477,13 +722,33 @@ class AcceptInviteView(APIView):
             return Response({'detail': 'This invite link has expired.'}, status=410)
 
         community = invite.community
-        member, created = CommunityMember.objects.get_or_create(
-            community=community,
-            user=request.user,
-        )
 
-        if not created:
+        existing = CommunityMember.objects.filter(community=community, user=request.user).first()
+        if existing:
+            if existing.status == 'pending':
+                return Response({'detail': 'Your request is still pending approval.'}, status=400)
             return Response({'detail': 'You are already a member of this community.'}, status=400)
+
+        if existing and existing.is_banned:
+            return Response({'detail': 'You are banned from this community.'}, status=403)
+
+        if community.require_approval:
+            member = CommunityMember.objects.create(
+                community=community, user=request.user, status='pending',
+            )
+            invite.used = True
+            invite.used_at = timezone.now()
+            invite.save(update_fields=['used', 'used_at'])
+            return Response({
+                'detail': 'Request sent. Waiting for admin approval.',
+                'community_id': community.pk,
+                'status': 'pending',
+            })
+
+        member = CommunityMember.objects.create(
+            community=community, user=request.user, status='approved',
+            approved_at=timezone.now(),
+        )
 
         # Mark invite as used
         invite.used    = True
@@ -491,11 +756,127 @@ class AcceptInviteView(APIView):
         invite.save(update_fields=['used', 'used_at'])
 
         # Update member count
-        Community.objects.filter(pk=community.pk).update(
-            member_count=CommunityMember.objects.filter(community=community).count()
-        )
+        member_count = CommunityMember.objects.filter(community=community, status='approved').count()
+        Community.objects.filter(pk=community.pk).update(member_count=member_count)
 
         return Response({
             'detail':       'You have successfully joined the community.',
             'community_id': community.pk,
+        })
+
+
+class ShareListingToGroupsView(APIView):
+    """
+    POST /api/community/share-listing/
+    Body: { "listing_id": "<str>", "community_ids": ["<str>", ...] }
+
+    Creates a shop_promo Post in each listed community that the user belongs to.
+    Skips communities where the user is not a member.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        listing_id   = request.data.get('listing_id')
+        community_ids = request.data.get('community_ids', [])
+
+        if not listing_id:
+            return Response({'detail': 'listing_id is required.'}, status=400)
+        if not community_ids:
+            return Response({'detail': 'community_ids is required.'}, status=400)
+
+        try:
+            listing = ShopListing.objects.get(pk=listing_id)
+        except ShopListing.DoesNotExist:
+            return Response({'detail': 'Listing not found.'}, status=404)
+
+        member_ids = set(
+            CommunityMember.objects.filter(
+                user=request.user,
+                is_banned=False,
+                status='approved',
+            ).values_list('community_id', flat=True)
+        )
+
+        created = []
+        skipped = []
+        
+        category_slug = listing.category.slug if listing.category else 'marketplace'
+        slug_to_segment = {
+            'marketplace': 'marketplace',
+            'vehicles': 'vehicles',
+            'housing': 'housing',
+            'fashion': 'fashion',
+            'electronics': 'electronics',
+            'furniture': 'furniture',
+            'baby-kids': 'baby-kids-store',
+            'books': 'books',
+            'equipment-tools': 'equipment-tools',
+        }
+        url_segment = slug_to_segment.get(category_slug, category_slug)
+        frontend_url = getattr(django_settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+        product_url = f"{frontend_url}/dashboard/product/{url_segment}?listing={listing.id}"
+        
+        for cid in community_ids:
+            if cid not in member_ids:
+                skipped.append(cid)
+                continue
+            
+            # 1. Create shop promo Post
+            post = Post.objects.create(
+                community_id=cid,
+                author=request.user,
+                post_type='shop_promo',
+                content=listing.title,
+                shop_listing=listing,
+            )
+            created.append({'community_id': cid, 'post_id': post.pk})
+            
+            # 2. Create Chat Message so it appears in the community chat
+            message_content = f"Shared a listing: {listing.title}\n{product_url}"
+            message = Message.objects.create(
+                community_id=cid,
+                sender=request.user,
+                content=message_content,
+            )
+            
+            # 3. Notify other group members
+            try:
+                notify_community_members(message)
+            except Exception as e:
+                pass
+            
+            # 4. Broadcast to WS group
+            avatar_url = None
+            avatar = getattr(request.user, 'avatar', None) or getattr(request.user, 'profile_picture', None)
+            if avatar:
+                try:
+                    avatar_url = request.build_absolute_uri(avatar.url)
+                except Exception:
+                    pass
+            
+            try:
+                broadcast_to_community(
+                    community_id=cid,
+                    event_type='chat_message',
+                    payload={
+                        'id':              str(message.id),
+                        'content':         message.content,
+                        'sender_id':       str(request.user.id),
+                        'sender_username': request.user.username,
+                        'sender_avatar':   avatar_url,
+                        'reply_to':        None,
+                        'attachment_url':  None,
+                        'attachment_name': '',
+                        'attachment_type': '',
+                        'attachment_size': 0,
+                        'created_at':      message.created_at.isoformat(),
+                    }
+                )
+            except Exception as e:
+                pass
+
+        return Response({
+            'created': created,
+            'skipped': skipped,
+            'detail':  f"Shared to {len(created)} group(s). {len(skipped)} skipped.",
         })

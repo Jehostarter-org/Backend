@@ -81,7 +81,7 @@ class ShopAdmin(gis_admin.GISModelAdmin):
             'fields': ('whatsapp', 'website', 'logo', 'banner')
         }),
         ('System Fields', {
-            'fields': ('currency', 'created_at', 'updated_at'),
+            'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
@@ -133,7 +133,7 @@ class ShopListingAdmin(admin.ModelAdmin):
     ]
     search_fields = ['title', 'description', 'shop__name', 'id']
     raw_id_fields = ['shop', 'category']
-    readonly_fields = ['id', 'created_at', 'updated_at', 'currency']
+    readonly_fields = ['id', 'created_at', 'updated_at']
     list_per_page = 30
     list_editable = ['is_available', 'is_boosted']
     
@@ -142,7 +142,7 @@ class ShopListingAdmin(admin.ModelAdmin):
             'fields': ('id', 'shop', 'category', 'title', 'description')
         }),
         ('Pricing & Type', {
-            'fields': ('price', 'currency', 'listing_type', 'condition')
+            'fields': ('price', 'listing_type', 'condition')
         }),
         ('Status', {
             'fields': ('is_available', 'is_boosted', 'boost_expires_at', 'is_deleted', 'deleted_at')

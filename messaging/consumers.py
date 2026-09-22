@@ -95,6 +95,12 @@ class ChatConsumer(AsyncWebsocketConsumer):
                     self.room_group_name,
                     {'type': 'broadcast_message', 'message': message}
                 )
+                # Keep open admin support inboxes in sync
+                if await self._is_support_conversation():
+                    await self.channel_layer.group_send(
+                        'support_admins',
+                        {'type': 'support_update', 'conversation_id': self.conversation_id}
+                    )
 
         elif msg_type == 'typing':
             await self.channel_layer.group_send(
@@ -187,14 +193,25 @@ class ChatConsumer(AsyncWebsocketConsumer):
     @database_sync_to_async
     def _is_participant(self):
         from .models import Conversation
+        try:
+            conversation = Conversation.objects.get(pk=self.conversation_id)
+        except Conversation.DoesNotExist:
+            return False
+        # A stored participant, or any staff member on a support thread, may join.
+        if conversation.participants.filter(pk=self.user.pk).exists():
+            return True
+        return conversation.is_support() and self.user.is_staff
+
+    @database_sync_to_async
+    def _is_support_conversation(self):
+        from .models import Conversation
         return Conversation.objects.filter(
-            pk=self.conversation_id,
-            participants=self.user,
+            pk=self.conversation_id, service_type='support'
         ).exists()
 
     @database_sync_to_async
     def _save_message(self, body, service_card, reply_to_id=None):
-        from .models import Conversation, Message
+        from .models import Conversation, Message, MessageAttachment
         try:
             conversation = Conversation.objects.get(pk=self.conversation_id)
         except Conversation.DoesNotExist:
@@ -217,6 +234,16 @@ class ChatConsumer(AsyncWebsocketConsumer):
         conversation.updated_at = timezone.now()
         conversation.save(update_fields=['updated_at'])
 
+        attachments = [
+            {
+                'id': att.id,
+                'url': att.file.url if att.file else '',
+                'filename': att.filename,
+                'filesize': att.filesize,
+            }
+            for att in msg.attachments.all()
+        ]
+
         return {
             'id':           msg.id,
             'body':         msg.body,
@@ -226,6 +253,7 @@ class ChatConsumer(AsyncWebsocketConsumer):
             },
             'reply_to': self._reply_preview(reply_to),
             'service_card': msg.service_card,
+            'attachments':  attachments,
             'is_read':      msg.is_read,
             'created_at':   msg.created_at.isoformat(),
         }
@@ -270,3 +298,61 @@ class ChatConsumer(AsyncWebsocketConsumer):
             conversation__participants=self.user,
             is_read=False,
         ).exclude(sender=self.user).count()
+
+
+class SupportAdminsConsumer(AsyncWebsocketConsumer):
+    """
+    WebSocket that keeps the admin portal "Support inbox" live.
+
+    Connect:  ws://host/ws/support/admins/?token=<access_token>
+    Auth:     JWT query-param (same as ChatConsumer); requires an is_staff user.
+
+    Messages pushed to the client:
+      { "type": "support_update", "conversation_id": <id> }
+    """
+
+    async def connect(self):
+        token_str = self._get_token()
+        if not token_str:
+            logger.warning('[Support WS] No token — rejecting')
+            await self.close()
+            return
+
+        self.user = await self._get_user(token_str)
+        if not self.user or not self.user.is_staff:
+            logger.warning('[Support WS] Not an authenticated staff member — rejecting')
+            await self.close()
+            return
+
+        self.group_name = 'support_admins'
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+        logger.info('[Support WS] Staff connected: %s', self.user.email)
+
+    async def disconnect(self, close_code):
+        if getattr(self, 'group_name', None):
+            await self.channel_layer.group_discard(self.group_name, self.channel_name)
+
+    # Forwarded from broadcast_to_admins(...) via group_send.
+    async def support_update(self, event):
+        await self.send(text_data=json.dumps({
+            'type':            'support_update',
+            'conversation_id': event.get('conversation_id'),
+        }))
+
+    def _get_token(self):
+        qs = self.scope.get('query_string', b'').decode()
+        for part in qs.split('&'):
+            if part.startswith('token='):
+                return part[6:]
+        return None
+
+    @database_sync_to_async
+    def _get_user(self, token_str):
+        try:
+            data    = AccessToken(token_str)
+            user_id = data['user_id']
+            return User.objects.get(id=user_id)
+        except Exception as e:
+            logger.warning('[Support WS] auth failed: %s', e)
+            return None

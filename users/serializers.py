@@ -62,8 +62,7 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         token['first_name'] = user.first_name
         token['last_name']  = user.last_name
         token['plan']       = user.membership_plan   # from @property on User model
-        token['is_staff']   = user.is_staff
-        token['is_superuser'] = user.is_superuser
+        # Do NOT embed is_staff/is_superuser in JWT — check from DB instead
         return token
 
 
@@ -299,14 +298,14 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'email',
             'first_name', 'last_name',
-            'phone', 'avatar', 'bio', 'is_verified',
+            'phone', 'avatar', 'bio', 'is_verified', 'is_active',
             'birth_country', 'current_country', 'destination_country',
             'city', 'state_province', 'migration_status',
             'currency', 'membership_plan',
-            'accepted_terms', 'created_at',
+            'accepted_terms', 'accepted_terms_at', 'created_at',
         ]
         read_only_fields = [
-            'id', 'is_verified', 'currency', 'membership_plan', 'created_at',
+            'id', 'is_verified', 'is_active', 'currency', 'membership_plan', 'created_at',
         ]
 
 

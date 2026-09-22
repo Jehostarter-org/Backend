@@ -94,12 +94,21 @@ class AvailableServicesConsumer(AsyncWebsocketConsumer):
         profiles = ServiceProviderProfile.objects.filter(
             user=self.user,
             is_active=True,
+            approval_status='approved',
         )
         groups = []
         for p in profiles:
-            if not p.country_code or not p.city:
+            if not p.country_code:
                 continue
-            groups.append(
-                f'available_services_{p.country_code}_{p.city.lower()}_{p.service_type}'
-            )
+            # Airport pickups are broadcast to every driver in the AIRPORT's
+            # country (the rider may live elsewhere), so drivers also join a
+            # country-wide group: available_services_{country}_all_{service_type}
+            if p.service_type == 'airport_pickup':
+                groups.append(
+                    f'available_services_{p.country_code}_all_{p.service_type}'
+                )
+            if p.city:
+                groups.append(
+                    f'available_services_{p.country_code}_{p.city.lower()}_{p.service_type}'
+                )
         return groups

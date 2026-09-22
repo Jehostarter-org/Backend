@@ -6,15 +6,29 @@ from .models import Conversation, Message, MessageAttachment
 User = get_user_model()
 
 
+def can_access_conversation(user, conversation):
+    """True if the user may read/send in this conversation.
+
+    A user may access the thread if they are a stored participant, or — for a
+    support thread — if they are any staff member (so any admin can help).
+    """
+    if conversation.participants.filter(pk=user.pk).exists():
+        return True
+    if conversation.is_support() and user.is_staff:
+        return True
+    return False
+
+
 class ParticipantSerializer(serializers.ModelSerializer):
     """Minimal user info shown inside conversation/message previews."""
     full_name    = serializers.SerializerMethodField()
     is_gold      = serializers.SerializerMethodField()
     avatar_url   = serializers.SerializerMethodField()
+    is_online    = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
-        fields = ['id', 'full_name', 'email', 'is_gold', 'avatar_url']
+        fields = ['id', 'full_name', 'email', 'is_gold', 'avatar_url', 'is_online']
 
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.email
@@ -30,6 +44,10 @@ class ParticipantSerializer(serializers.ModelSerializer):
         except AttributeError:
             pass
         return None
+
+    def get_is_online(self, obj):
+        from .presence import user_is_online
+        return user_is_online(obj.pk)
 
 
 class MessageAttachmentSerializer(serializers.ModelSerializer):
@@ -75,7 +93,7 @@ class MessageSerializer(serializers.ModelSerializer):
 class MessageCreateSerializer(serializers.ModelSerializer):
     """Used when sending a new message via REST."""
     uploaded_images = serializers.ListField(
-        child=serializers.ImageField(),
+        child=serializers.FileField(),
         required=False,
         write_only=True,
     )
@@ -97,7 +115,7 @@ class MessageCreateSerializer(serializers.ModelSerializer):
 
     def validate_conversation(self, conversation):
         user = self.context['request'].user
-        if not conversation.participants.filter(pk=user.pk).exists():
+        if not can_access_conversation(user, conversation):
             raise serializers.ValidationError('You are not a participant in this conversation.')
         return conversation
 
@@ -137,6 +155,17 @@ class ConversationSerializer(serializers.ModelSerializer):
         other = obj.get_other_participant(user)
         if other:
             return ParticipantSerializer(other, context=self.context).data
+        # Support threads have no stored staff participant — present a friendly
+        # "support agent" placeholder so inbox UIs always have something to show.
+        if obj.is_support():
+            return {
+                'id':         -1,
+                'full_name':  'Jehostarter Support',
+                'email':      '',
+                'is_gold':    False,
+                'avatar_url': None,
+                'is_online':  False,
+            }
         return None
 
     def get_last_message(self, obj):
@@ -146,7 +175,7 @@ class ConversationSerializer(serializers.ModelSerializer):
                 'id':         msg.id,
                 'body':       msg.body[:80],
                 'sender_id':  msg.sender_id,
-                'created_at': msg.created_at,
+                'created_at': msg.created_at.isoformat() if msg.created_at else None,
             }
         return None
 
@@ -195,3 +224,45 @@ class StartConversationSerializer(serializers.Serializer):
         raise serializers.ValidationError({
             'recipient_id': 'Recipient is required unless this conversation is linked to a shop listing.'
         })
+
+
+class SupportStartSerializer(serializers.Serializer):
+    """Payload for a user opening a support request (admin reply is in the portal)."""
+    initial_message = serializers.CharField(required=False, allow_blank=True)
+    subject         = serializers.CharField(required=False, allow_blank=True)
+
+
+class SupportConversationSerializer(serializers.ModelSerializer):
+    """Admin support inbox row: the customer, last message, unread and metadata."""
+    customer    = serializers.SerializerMethodField()
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model  = Conversation
+        fields = [
+            'id', 'customer', 'last_message', 'unread_count',
+            'subject', 'created_at', 'updated_at',
+        ]
+
+    def get_customer(self, obj):
+        customer = obj.support_customer()
+        if not customer:
+            return None
+        return ParticipantSerializer(customer, context=self.context).data
+
+    def get_last_message(self, obj):
+        msg = obj.messages.last()
+        if not msg:
+            return None
+        return {
+            'id':         msg.id,
+            'body':       msg.body[:120],
+            'sender_id':  msg.sender_id,
+            'sender_name': msg.sender.get_full_name() or msg.sender.email,
+            'created_at': msg.created_at.isoformat() if msg.created_at else None,
+        }
+
+    def get_unread_count(self, obj):
+        # Admin perspective: unread = messages from the customer not yet read.
+        return obj.messages.filter(is_read=False).exclude(sender__is_staff=True).count()

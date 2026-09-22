@@ -5,6 +5,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -13,6 +14,12 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .throttles import (
+    SignUpRateThrottle,
+    LoginRateThrottle,
+    ForgotPasswordRateThrottle,
+    ResendVerificationRateThrottle,
+)
 
 from .serializers import (
     RegisterSerializer,
@@ -40,6 +47,7 @@ class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [SignUpRateThrottle]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -79,6 +87,7 @@ class VerifyEmailView(APIView):
 
 class ResendVerificationEmailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [ResendVerificationRateThrottle]
 
     def post(self, request):
         user = request.user
@@ -98,6 +107,7 @@ class LoginView(TokenObtainPairView):
     serializer_class = EmailTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [LoginRateThrottle]
 
 
 class AdminRegisterView(generics.CreateAPIView):
@@ -105,12 +115,14 @@ class AdminRegisterView(generics.CreateAPIView):
     serializer_class   = AdminRegisterSerializer
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes   = [SignUpRateThrottle]
 
 
 class AdminLoginView(TokenObtainPairView):
     serializer_class   = AdminTokenObtainPairSerializer
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes   = [LoginRateThrottle]
 
 
 class AdminMeView(generics.RetrieveAPIView):
@@ -262,6 +274,7 @@ class PublicProfileView(generics.RetrieveAPIView):
 class GoogleAuthView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [LoginRateThrottle]
 
     def post(self, request):
         credential = request.data.get('credential')
@@ -273,7 +286,17 @@ class GoogleAuthView(APIView):
             )
 
         try:
-            google_client_id = config('GOOGLE_CLIENT_ID')
+            google_client_id = config('GOOGLE_CLIENT_ID', default='')
+            if not google_client_id:
+                return Response(
+                    {
+                        'error': (
+                            'Google sign-in is not configured. '
+                            'Set GOOGLE_CLIENT_ID in the backend environment.'
+                        ),
+                    },
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             id_info = id_token.verify_oauth2_token(
                 credential,
                 google_requests.Request(),
@@ -342,34 +365,6 @@ class GoogleAuthView(APIView):
             'refresh': str(refresh),
             'created': created,
         }, status=status.HTTP_200_OK)
-    
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def update_location(request):
-    lat = request.data.get('latitude')
-    lng = request.data.get('longitude')
-    source = request.data.get('source', 'gps')
-
-    if lat is None or lng is None:
-        return Response({'error': 'latitude and longitude required'}, status=400)
-
-    try:
-        request.user.location = Point(float(lng), float(lat), srid=4326)
-        request.user.location_source = source
-        request.user.save(update_fields=['location', 'location_source'])
-
-        from asgiref.sync import async_to_sync
-        from channels.layers import get_channel_layer
-        channel_layer = get_channel_layer()
-        if channel_layer:
-            async_to_sync(channel_layer.group_send)(
-                f'user_{request.user.id}',
-                {'type': 'location_updated', 'latitude': lat, 'longitude': lng, 'source': source},
-            )
-
-        return Response({'status': 'location updated'})
-    except Exception as e:
-        return Response({'error': str(e)}, status=400)
 
 
 class AdminUserListView(generics.ListAPIView):
@@ -382,6 +377,29 @@ class AdminUserDetailView(generics.RetrieveAPIView):
     queryset = User.objects.all()
     serializer_class = UserProfileSerializer
     permission_classes = [IsStaffUser]
+
+
+class AdminToggleUserActiveView(APIView):
+    """Admin: Suspend / unsuspend a user — POST /api/users/admin/users/<pk>/toggle-active/"""
+    permission_classes = [IsStaffUser]
+
+    def post(self, request, pk):
+        user = get_object_or_404(User, pk=pk)
+
+        if user.is_staff:
+            return Response(
+                {'detail': 'Cannot suspend an admin account.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user.is_active = not user.is_active
+        user.save(update_fields=['is_active'])
+
+        action = 'activated' if user.is_active else 'suspended'
+        return Response({
+            'message': f'User {user.email} has been {action}.',
+            'is_active': user.is_active,
+        })
 
 # ── Forgot / Reset Password ───────────────────────────────────────────────────
 
@@ -398,6 +416,7 @@ class ForgotPasswordView(APIView):
     """
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [ForgotPasswordRateThrottle]
 
     def post(self, request):
         serializer = ForgotPasswordSerializer(data=request.data)
@@ -443,6 +462,7 @@ class ResetPasswordView(APIView):
     """
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
+    throttle_classes = [ForgotPasswordRateThrottle]
 
     def post(self, request):
         serializer = ResetPasswordSerializer(data=request.data)

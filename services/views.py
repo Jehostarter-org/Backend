@@ -1,4 +1,4 @@
-from rest_framework import generics, permissions, status
+from rest_framework import generics, permissions, status, filters
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -17,6 +17,7 @@ from .distance_utils import (
     calculate_distance_from_coords,
     calculate_price_based_on_distance,
     get_coordinates_from_address,
+    get_route_coordinates,
     geocode_airport
 )
 
@@ -31,10 +32,26 @@ from .serializers import (
     ServiceProviderProfileSerializer,
     MigrationSpecialistApplicationSerializer,
     PropertySerializer, PropertyCreateUpdateSerializer, PropertyImageSerializer,
+    ImmigrationOfficerSerializer,
 )
 from notifications.models import Notification
 
 logger = logging.getLogger(__name__)
+
+
+def _chaperone_help_types_display(help_types):
+    """Format one or more chaperone help types into a human-readable string.
+
+    Accepts a single string (legacy), a list of strings, or None.
+    """
+    if isinstance(help_types, str):
+        help_types = [help_types]
+    labels = [
+        dict(ChaperoneService.HELP_TYPES).get(h, h)
+        for h in (help_types or [])
+        if h
+    ]
+    return ', '.join(labels) if labels else 'General'
 
 try:
     from channels.layers import get_channel_layer
@@ -54,6 +71,110 @@ def _broadcast(group, event_type, payload):
         })
     except Exception as exc:
         logger.warning("WebSocket broadcast failed (%s): %s", group, exc)
+
+
+def _broadcast_airport_pickup(sr, actor):
+    """Notify every approved driver in the AIRPORT's country about a pickup.
+
+    Airport pickups are routed by the airport's country, not the rider's home
+    location — a rider in Nigeria booking Brisbane must notify Australian
+    drivers. Does three things:
+      1. Real-time WS broadcast to the country-wide driver group
+         available_services_{country}_all_airport_pickup (plus the city group
+         when a city is known).
+      2. Persists a Notification record for every approved driver in that
+         country so they see it in their notification centre even if offline.
+      3. Pushes a live notification to each driver's user_notifications channel.
+
+    Returns the number of drivers notified.
+    """
+    from notifications.models import Notification
+    from services.models import ServiceProviderProfile
+
+    country_key = (sr.country_code or '').upper()
+    city_key    = (sr.city or '').lower()
+
+    airport_name = (
+        getattr(getattr(sr, 'airport_pickup_details', None), 'airport', None)
+        or sr.description
+    )
+
+    payload = {
+        'id':           str(sr.id),
+        'service_id':   str(sr.id),
+        'service_type': sr.service_type,
+        'country_code': sr.country_code,
+        'city':         sr.city or '',
+        'description':  sr.description,
+        'price':        str(sr.price) if sr.price else None,
+        'currency':     sr.currency,
+        'airport':      airport_name,
+        'created_at':   sr.created_at.isoformat() if sr.created_at else None,
+    }
+
+    # ── 1. Real-time WebSocket broadcast ──────────────────────────────────
+    groups = [f'available_services_{country_key}_all_{sr.service_type}']
+    if city_key:
+        groups.append(
+            f'available_services_{country_key}_{city_key}_{sr.service_type}'
+        )
+    for group in groups:
+        _broadcast(group, 'new_service_request', payload)
+
+    # ── 2. Persist a Notification for every driver in the country ────────
+    drivers = (
+        ServiceProviderProfile.objects
+        .filter(
+            country_code=sr.country_code,
+            service_type=sr.service_type,
+            is_active=True,
+            approval_status='approved',
+        )
+        .exclude(user=sr.requester)
+        .select_related('user')
+    )
+
+    notif_link  = '/dashboard/airport-pickup/drivers-airport-pickup/drivers-pickup'
+    notif_title = 'New Airport Pickup Request'
+    notif_msg = (
+        f'A passenger needs a ride from {airport_name} '
+        f'to {sr.notes or "destination"}.'
+    )
+
+    notifications = [
+        Notification(
+            recipient=p.user,
+            actor=actor,
+            notification_type='service_accepted',
+            title=notif_title,
+            message=notif_msg,
+            link=notif_link,
+        )
+        for p in drivers
+    ]
+    if notifications:
+        Notification.objects.bulk_create(notifications)
+
+    # ── 3. Live push to each driver's notification channel ────────────────
+    for profile in drivers:
+        try:
+            layer = get_channel_layer()
+            if layer:
+                async_to_sync(layer.group_send)(
+                    f'user_notifications_{profile.user.id}',
+                    {
+                        'type': 'new_notification',
+                        'payload': {
+                            'title': notif_title,
+                            'message': notif_msg,
+                            'link': notif_link,
+                        },
+                    }
+                )
+        except Exception:
+            pass  # non-critical
+
+    return len(notifications)
 
 
 # ── Uber/Bolt-style pricing ──────────────────────────────────────────────────
@@ -296,7 +417,8 @@ class UpdateDriverLocationView(APIView):
         is_driver = ServiceProviderProfile.objects.filter(
             user=request.user,
             service_type='airport_pickup',
-            is_active=True
+            is_active=True,
+            approval_status='approved',
         ).exists()
         
         if not is_driver:
@@ -324,12 +446,22 @@ class ServiceRequestListCreateView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         sr = serializer.save(requester=self.request.user)
-        # Fall back to user's profile city if the payload didn't include one
-        if not sr.city:
+        # Fall back to user's profile city if the payload didn't include one.
+        # Airport pickups are excluded: those are routed by the AIRPORT's country,
+        # so the rider's home city must not be injected (it would mis-target drivers).
+        if not sr.city and sr.service_type != 'airport_pickup':
             sr.city = self.request.user.city or ''
             sr.save(update_fields=['city'])
+
+        if not sr.country_code:
+            return
+
+        if sr.service_type == 'airport_pickup':
+            _broadcast_airport_pickup(sr, self.request.user)
+            return
+
         city_key = (sr.city or '').lower()
-        if city_key and sr.country_code:
+        if city_key:
             _broadcast(
                 group=f'available_services_{sr.country_code}_{city_key}_{sr.service_type}',
                 event_type='new_service_request',
@@ -371,10 +503,11 @@ class DriverServiceRequestDetailView(generics.RetrieveAPIView):
 
         pk = self.kwargs['pk']
 
-        # Only active providers may use this endpoint
+        # Only approved providers may use this endpoint
         is_driver = ServiceProviderProfile.objects.filter(
             user=self.request.user,
             is_active=True,
+            approval_status='approved',
         ).exists()
         if not is_driver:
             raise PermissionDenied('Only registered providers can view this.')
@@ -547,6 +680,7 @@ class AvailableServicesView(generics.ListAPIView):
         provider_types = ServiceProviderProfile.objects.filter(
             user=user,
             is_active=True,
+            approval_status='approved',
         ).values_list('service_type', flat=True)
 
         if not provider_types:
@@ -587,10 +721,56 @@ class ClaimServiceView(APIView):
             )
 
         _broadcast(
-            group=f'available_services_{sr.country_code}_{sr.city.lower()}_{sr.service_type}',
+            group=f'available_services_{sr.country_code}_{(sr.city or "").lower()}_{sr.service_type}',
             event_type='service_claimed',
-            payload={'service_id': sr.id},
+            payload={'service_id': str(sr.id)},
         )
+        if sr.service_type == 'airport_pickup':
+            _broadcast(
+                group=f'available_services_{sr.country_code}_all_{sr.service_type}',
+                event_type='service_claimed',
+                payload={'service_id': str(sr.id)},
+            )
+
+        # ── Notify the requester that their request was accepted ─────────
+        if sr.service_type == 'chaperone':
+            from notifications.models import Notification
+            provider_name = ''
+            try:
+                profile = ServiceProviderProfile.objects.filter(
+                    user=user, service_type='chaperone'
+                ).first()
+                if profile:
+                    provider_name = f'{profile.first_name} {profile.last_name}'.strip()
+            except Exception:
+                pass
+            provider_name = provider_name or user.get_full_name() or user.username
+            Notification.objects.create(
+                recipient=sr.requester,
+                actor=user,
+                notification_type='service_accepted',
+                title='Chaperone Request Accepted',
+                message=f'{provider_name} has accepted your request for assistance.',
+                link='/dashboard/chaperone',
+            )
+            try:
+                from asgiref.sync import async_to_sync
+                from channels.layers import get_channel_layer
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    async_to_sync(channel_layer.group_send)(
+                        f'user_notifications_{sr.requester.id}',
+                        {
+                            'type': 'new_notification',
+                            'payload': {
+                                'title': 'Chaperone Request Accepted',
+                                'message': f'{provider_name} has accepted your request for assistance.',
+                                'link': '/dashboard/chaperone',
+                            },
+                        }
+                    )
+            except Exception:
+                pass
 
         return Response(
             ServiceRequestSerializer(sr, context={'request': request}).data,
@@ -731,7 +911,7 @@ class ServiceProviderProfileListCreateView(generics.ListCreateAPIView):
         return ServiceProviderProfile.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
-        serializer.save(user=self.request.user, is_active=True)
+        serializer.save(user=self.request.user, is_active=False, approval_status='pending')
 
 
 class ServiceProviderProfileDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -834,6 +1014,36 @@ class ConfirmVehicleView(APIView):
             'distance_km': float(sr.distance_km) if sr.distance_km else None,
             'minimum_fare': float(min_fare),
         }, status=status.HTTP_200_OK)
+
+
+class RouteDirectionsView(APIView):
+    """
+    GET /api/services/route/?pickup_lat=..&pickup_lon=..&dropoff_lat=..&dropoff_lon=..
+
+    Returns the real driving route as a polyline of [lat, lng] points so the
+    map can draw Uber-style road directions instead of a straight line.
+    Falls back to a straight line if routing providers are unavailable.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        qp = request.query_params
+        try:
+            pickup_lat   = float(qp.get('pickup_lat'))
+            pickup_lon   = float(qp.get('pickup_lon'))
+            dropoff_lat  = float(qp.get('dropoff_lat'))
+            dropoff_lon  = float(qp.get('dropoff_lon'))
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'pickup_lat, pickup_lon, dropoff_lat and dropoff_lon are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = get_route_coordinates(
+            (pickup_lat, pickup_lon),
+            (dropoff_lat, dropoff_lon),
+        )
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class AirportListView(APIView):
@@ -1029,11 +1239,13 @@ class AvailableChaperonesView(generics.ListAPIView):
         qs = ServiceProviderProfile.objects.filter(
             service_type='chaperone',
             is_active=True,
+            approval_status='approved',
         ).select_related('user')
 
         city = self.request.query_params.get('city')
         country_code = self.request.query_params.get('country_code')
         offers_translation = self.request.query_params.get('offers_translation')
+        offers_registration = self.request.query_params.get('offers_registration')
 
         if city:
             qs = qs.filter(city__iexact=city)
@@ -1041,8 +1253,27 @@ class AvailableChaperonesView(generics.ListAPIView):
             qs = qs.filter(country_code__iexact=country_code)
         if offers_translation and offers_translation.lower() == 'true':
             qs = qs.filter(offers_translation_service=True)
+        if offers_registration and offers_registration.lower() == 'true':
+            qs = qs.filter(offers_registration_service=True)
 
         return qs
+
+
+class ImmigrationOfficersView(generics.ListAPIView):
+    """GET /api/services/immigration-officers/
+
+    Lists approved, active providers who checked "I am an Immigration Officer",
+    showing their name and phone number.
+    """
+    serializer_class = ImmigrationOfficerSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return ServiceProviderProfile.objects.filter(
+            is_immigration_officer=True,
+            is_active=True,
+            approval_status='approved',
+        ).select_related('user').order_by('first_name', 'last_name')
 
 
 class BroadcastChaperoneServiceView(APIView):
@@ -1091,6 +1322,7 @@ class BroadcastChaperoneServiceView(APIView):
                 country_code=sr.country_code,
                 service_type='chaperone',
                 is_active=True,
+                approval_status='approved',
             )
             .exclude(user=sr.requester)
             .select_related('user')
@@ -1100,8 +1332,8 @@ class BroadcastChaperoneServiceView(APIView):
             if same_city.exists():
                 chaperones = same_city
 
-        help_type_display = dict(ChaperoneService.HELP_TYPES).get(
-            getattr(getattr(sr, 'chaperone_details', None), 'help_type', ''), 'General'
+        help_type_display = _chaperone_help_types_display(
+            getattr(getattr(sr, 'chaperone_details', None), 'help_type', None)
         )
         notif_link = '/dashboard/chaperone'
         notif_title = 'New Chaperone Service Request'
@@ -1181,87 +1413,204 @@ class BroadcastServiceView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ── 1. WebSocket broadcast to driver groups ───────────────────────
-        group = (
-            f'available_services_{sr.country_code}'
-            f'_{sr.city.lower() if sr.city else ""}_{sr.service_type}'
-        )
-        _broadcast(group, 'new_service_request', {
-            'id':           sr.id,
-            'service_id':   sr.id,
-            'service_type': sr.service_type,
-            'country_code': sr.country_code,
-            'city':         sr.city,
-            'description':  sr.description,
-            'price':        str(sr.price) if sr.price else None,
-            'currency':     sr.currency,
-            'airport':      sr.airport_pickup_details.airport if sr.airport_pickup_details else None,
-            'created_at':   sr.created_at.isoformat() if sr.created_at else None,
-        })
-
-        # ── 2. Persist a Notification for every driver in the area ────────
-        from notifications.models import Notification
-        from services.models import ServiceProviderProfile
-
-        drivers = (
-            ServiceProviderProfile.objects
-            .filter(
-                country_code=sr.country_code,
-                service_type=sr.service_type,
-                is_active=True,
-            )
-            .exclude(user=sr.requester)
-            .select_related('user')
-        )
-        # Prefer same-city drivers, but don't exclude others entirely
-        if sr.city:
-            same_city = drivers.filter(city__iexact=sr.city)
-            if same_city.exists():
-                drivers = same_city
-
-        notif_link = f'/dashboard/airport-pickup/drivers-airport-pickup/drivers-pickup'
-        notif_title = 'New Airport Pickup Request'
-        notif_msg = (
-            f'A passenger needs a ride from '
-            f'{sr.airport_pickup_details.airport if sr.airport_pickup_details else sr.description} '
-            f'to {sr.notes or "destination"}.'
-        )
-
-        created = 0
-        notifications = []
-        for profile in drivers:
-            notifications.append(Notification(
-                recipient=profile.user,
-                actor=request.user,
-                notification_type='service_accepted',
-                title=notif_title,
-                message=notif_msg,
-                link=notif_link,
-            ))
-        if notifications:
-            Notification.objects.bulk_create(notifications)
-
-        for profile in drivers:
-            try:
-                from asgiref.sync import async_to_sync
-                from channels.layers import get_channel_layer
-                channel_layer = get_channel_layer()
-                if channel_layer:
-                    async_to_sync(channel_layer.group_send)(
-                        f'user_notifications_{profile.user.id}',
-                        {
-                            'type': 'new_notification',
-                            'payload': {
-                                'title': notif_title,
-                                'message': notif_msg,
-                                'link': notif_link,
-                            },
-                        }
-                    )
-            except Exception:
-                pass  # non-critical
+        notified = _broadcast_airport_pickup(sr, request.user)
 
         return Response({
-            'detail': f'Job broadcast to {len(notifications)} driver(s).',
-            'drivers_notified': len(notifications),
+            'detail': f'Job broadcast to {notified} driver(s).',
+            'drivers_notified': notified,
         }, status=status.HTTP_200_OK)
+
+
+# ── Admin Provider Approval Views ─────────────────────────────────────────────
+
+def _provider_eligibility(profile):
+    """
+    Evaluate a driver/chaperone application against the eligibility criteria.
+    Returns a checklist so admins can approve/decline properly:
+      { eligible, passed, total, checks: [{key, label, passed, detail}] }
+    """
+    from django.utils import timezone
+    today = timezone.now().date()
+    is_driver = profile.service_type == 'airport_pickup'
+
+    if profile.license_expiration_date:
+        if profile.license_expiration_date < today:
+            license_detail = f'EXPIRED — was valid until {profile.license_expiration_date}'
+        else:
+            license_detail = f'Valid until {profile.license_expiration_date}'
+    else:
+        license_detail = 'No expiry date recorded'
+
+    checks = [
+        {'key': 'full_name',          'label': 'Full name provided',              'passed': bool(profile.first_name and profile.last_name)},
+        {'key': 'nin',                'label': 'National ID (NIN)',               'passed': bool(profile.national_identity_number)},
+        {'key': 'emergency_contact',  'label': 'Emergency contact',               'passed': bool(profile.emergency_contact)},
+        {'key': 'location',           'label': 'City & country set',              'passed': bool(profile.city and profile.country_code)},
+    ]
+
+    if is_driver:
+        checks += [
+            {'key': 'license_number',     'label': 'Driver license number',       'passed': bool(profile.license_number)},
+            {'key': 'license_valid',      'label': 'License not expired',         'passed': bool(profile.license_expiration_date and profile.license_expiration_date >= today), 'detail': license_detail},
+            {'key': 'license_image',      'label': 'License photo uploaded',      'passed': bool(profile.driver_license_image)},
+            {'key': 'vehicle_model',      'label': 'Vehicle model',               'passed': bool(profile.vehicle_model)},
+            {'key': 'vehicle_year',       'label': 'Vehicle year',                'passed': bool(profile.vehicle_year)},
+            {'key': 'vehicle_colour',     'label': 'Vehicle colour',              'passed': bool(profile.vehicle_colour)},
+            {'key': 'plate_number',       'label': 'License plate number',        'passed': bool(profile.license_plate_number)},
+            {'key': 'vehicle_front',      'label': 'Vehicle — front photo',       'passed': bool(profile.front_view_picture)},
+            {'key': 'vehicle_back',       'label': 'Vehicle — back photo',        'passed': bool(profile.back_view_picture)},
+
+            {'key': 'plate_front_photo',  'label': 'Front plate photo',           'passed': bool(profile.plate_number_front_view_picture)},
+            {'key': 'plate_back_photo',   'label': 'Back plate photo',            'passed': bool(profile.plate_number_back_view_picture)},
+        ]
+    else:
+        checks += [
+            {'key': 'tfn_or_sim', 'label': 'TFN or SIM reference', 'passed': bool(profile.tax_file_number_reference or profile.sim_card_reference)},
+        ]
+
+    for check in checks:
+        check.setdefault('detail', '')
+
+    passed_count = sum(1 for c in checks if c['passed'])
+    return {
+        'eligible': passed_count == len(checks),
+        'passed': passed_count,
+        'total': len(checks),
+        'checks': checks,
+    }
+
+
+def _provider_documents(profile, request):
+    """Absolute URLs for every uploaded document, so the admin portal can show them."""
+    def url(field):
+        if not field:
+            return None
+        try:
+            return request.build_absolute_uri(field.url)
+        except Exception:
+            return None
+
+    return [
+        {'key': 'license_image',      'label': 'Driver License',            'url': url(profile.driver_license_image)},
+        {'key': 'front_view',         'label': 'Vehicle — Front',           'url': url(profile.front_view_picture)},
+        {'key': 'back_view',          'label': 'Vehicle — Back',            'url': url(profile.back_view_picture)},
+        {'key': 'plate_front',        'label': 'Plate — Front',             'url': url(profile.plate_number_front_view_picture)},
+        {'key': 'plate_back',         'label': 'Plate — Back',              'url': url(profile.plate_number_back_view_picture)},
+    ]
+
+
+class AdminProviderPendingApprovalsView(generics.ListAPIView):
+    """Admin: List all pending provider profiles — GET /api/services/admin/providers/pending/"""
+    serializer_class = ServiceProviderProfileSerializer
+    permission_classes = [permissions.IsAdminUser]
+
+    def get_queryset(self):
+        return ServiceProviderProfile.objects.filter(
+            approval_status='pending',
+            is_active=False,
+        ).select_related('user').order_by('-registered_at')
+
+
+class AdminProviderAllApprovalsView(generics.ListAPIView):
+    """Admin: List all provider profiles with optional status filter — GET /api/services/admin/providers/approvals/"""
+    serializer_class = ServiceProviderProfileSerializer
+    permission_classes = [permissions.IsAdminUser]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['first_name', 'last_name', 'user__email', 'user__username', 'city']
+    ordering_fields = ['registered_at', 'first_name', 'last_name', 'city']
+    ordering = ['-registered_at']
+
+    def get_queryset(self):
+        qs = ServiceProviderProfile.objects.select_related('user')
+        status_filter = self.request.query_params.get('status')
+        service_filter = self.request.query_params.get('service_type')
+        if status_filter:
+            qs = qs.filter(approval_status=status_filter)
+        if service_filter:
+            qs = qs.filter(service_type=service_filter)
+        return qs
+
+
+class AdminProviderApprovalDetailView(generics.RetrieveAPIView):
+    """Admin: Detailed provider profile — GET /api/services/admin/providers/<id>/approval-detail/"""
+    serializer_class = ServiceProviderProfileSerializer
+    permission_classes = [permissions.IsAdminUser]
+    lookup_field = 'id'
+    lookup_url_kwarg = 'pk'
+
+    def get_queryset(self):
+        return ServiceProviderProfile.objects.select_related('user', 'reviewed_by')
+
+    def retrieve(self, request, *args, **kwargs):
+        profile = self.get_object()
+        data = self.get_serializer(profile).data
+        data['eligibility'] = _provider_eligibility(profile)
+        data['documents'] = _provider_documents(profile, request)
+        return Response(data)
+
+
+class AdminProcessProviderApprovalView(APIView):
+    """Admin: Approve / reject a provider profile — POST /api/services/admin/providers/<pk>/process-approval/"""
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        profile = get_object_or_404(ServiceProviderProfile, pk=pk)
+
+        action = request.data.get('action')
+        notes = request.data.get('notes', '')
+
+        if action == 'approve':
+            profile.approval_status = 'approved'
+            profile.is_active = True
+            profile.reviewed_by = request.user
+            profile.reviewed_at = timezone.now()
+            profile.rejection_reason = ''
+            profile.save(update_fields=['approval_status', 'is_active', 'reviewed_by', 'reviewed_at', 'rejection_reason'])
+            return Response({
+                'message': f'{profile.get_service_type_display()} profile for {profile.full_name} approved.',
+                'status': 'approved',
+            })
+
+        elif action == 'reject':
+            if not notes:
+                return Response(
+                    {'detail': 'Rejection reason is required.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            profile.approval_status = 'rejected'
+            profile.is_active = False
+            profile.reviewed_by = request.user
+            profile.reviewed_at = timezone.now()
+            profile.rejection_reason = notes
+            profile.save(update_fields=['approval_status', 'is_active', 'reviewed_by', 'reviewed_at', 'rejection_reason'])
+            return Response({
+                'message': f'{profile.get_service_type_display()} profile for {profile.full_name} rejected.',
+                'status': 'rejected',
+                'reason': notes,
+            })
+
+        return Response(
+            {'detail': 'Invalid action. Use "approve" or "reject".'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+
+class AdminProviderStatsView(APIView):
+    """Admin: Approval statistics — GET /api/services/admin/providers/stats/"""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        return Response({
+            'providers': {
+                'total': ServiceProviderProfile.objects.count(),
+                'pending_approval': ServiceProviderProfile.objects.filter(approval_status='pending').count(),
+                'approved': ServiceProviderProfile.objects.filter(approval_status='approved').count(),
+                'rejected': ServiceProviderProfile.objects.filter(approval_status='rejected').count(),
+            },
+            'by_service_type': {
+                'drivers': ServiceProviderProfile.objects.filter(service_type='airport_pickup').count(),
+                'chaperones': ServiceProviderProfile.objects.filter(service_type='chaperone').count(),
+                'pending_drivers': ServiceProviderProfile.objects.filter(service_type='airport_pickup', approval_status='pending').count(),
+                'pending_chaperones': ServiceProviderProfile.objects.filter(service_type='chaperone', approval_status='pending').count(),
+            },
+        })

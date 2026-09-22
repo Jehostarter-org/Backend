@@ -33,4 +33,12 @@ class MarkAllReadView(APIView):
 class UnreadCountView(APIView):
     def get(self, request):
         count = request.user.notifications.filter(is_read=False).count()
-        return Response({'unread_count': count}) 
+        return Response({'unread_count': count})
+
+
+class DismissNotificationView(APIView):
+    def delete(self, request, pk):
+        deleted, _ = request.user.notifications.filter(pk=pk).delete()
+        if not deleted:
+            return Response({'detail': 'Not found.'}, status=404)
+        return Response({'detail': 'Dismissed.'}, status=204) 

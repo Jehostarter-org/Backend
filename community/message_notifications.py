@@ -10,6 +10,7 @@ from channels.layers import get_channel_layer
 
 from community.models import CommunityMember
 from notifications.models import Notification
+from .broadcast import broadcast_global_event
 
 channel_layer = get_channel_layer()
 
@@ -34,7 +35,7 @@ def notify_community_members(message):
 
     members = (
         CommunityMember.objects
-        .filter(community=community, is_banned=False)
+        .filter(community=community, is_banned=False, status='approved')
         .exclude(user_id=message.sender_id)
         .select_related('user')
     )
@@ -66,3 +67,21 @@ def notify_community_members(message):
                 'created_at': notif.created_at.isoformat(),
             },
         )
+
+    avatar = (
+        getattr(message.sender, 'avatar', None)
+        or getattr(message.sender, 'profile_picture', None)
+    )
+    sender_avatar = (
+        avatar.url if avatar and avatar.storage.exists(avatar.name) else None
+    )
+    broadcast_global_event('community_message', {
+        'id':              str(message.id),
+        'community_id':    str(community.id),
+        'community_name':  community.name,
+        'sender_username': message.sender.username,
+        'sender_avatar':   sender_avatar,
+        'content':         message.content or '',
+        'attachment_name': message.attachment_name,
+        'created_at':      message.created_at.isoformat(),
+    })

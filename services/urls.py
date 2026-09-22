@@ -25,16 +25,21 @@ from .views import (
     TrackDriverLocationView,
     UpdateTripStatusView,
     BroadcastServiceView,
-    # Add property views
     PropertyListCreateView,
     PropertyDetailView,
     PublishPropertyView,
     UploadPropertyImageView,
     DeletePropertyImageView,
     PropertySearchView,
-    # Chaperone views
     AvailableChaperonesView,
     BroadcastChaperoneServiceView,
+    ImmigrationOfficersView,
+    AdminProviderPendingApprovalsView,
+    AdminProviderAllApprovalsView,
+    AdminProviderApprovalDetailView,
+    AdminProcessProviderApprovalView,
+    AdminProviderStatsView,
+    RouteDirectionsView,
 )
 
 urlpatterns = [
@@ -89,13 +94,26 @@ urlpatterns = [
     path('properties/<str:pk>/upload-images/', UploadPropertyImageView.as_view(), name='property_upload_images'),
     path('properties/<str:pk>/images/<str:image_id>/', DeletePropertyImageView.as_view(), name='property_delete_image'),
 
+    # ── Admin Provider Approval Endpoints ─────────────────────────────────────
+    path('admin/providers/pending/', AdminProviderPendingApprovalsView.as_view(), name='admin_providers_pending'),
+    path('admin/providers/approvals/', AdminProviderAllApprovalsView.as_view(), name='admin_providers_all'),
+    path('admin/providers/stats/', AdminProviderStatsView.as_view(), name='admin_provider_stats'),
+    path('admin/providers/<str:pk>/approval-detail/', AdminProviderApprovalDetailView.as_view(), name='admin_provider_approval_detail'),
+    path('admin/providers/<str:pk>/process-approval/', AdminProcessProviderApprovalView.as_view(), name='admin_process_provider_approval'),
+
     # ── Chaperone Endpoints ───────────────────────────────────────────────────
     path('chaperones/available/', AvailableChaperonesView.as_view(), name='available_chaperones'),
     path('<str:pk>/broadcast-chaperone/', BroadcastChaperoneServiceView.as_view(), name='broadcast_chaperone'),
 
+    # ── Immigration Officers ──────────────────────────────────────────────────
+    path('immigration-officers/', ImmigrationOfficersView.as_view(), name='immigration_officers'),
+
     # Dynamic routes must come last so static dashboard routes are not treated as IDs.
     path('<str:pk>/claim/', ClaimServiceView.as_view(), name='claim_service'),
     path('<str:pk>/broadcast/', BroadcastServiceView.as_view(), name='broadcast_service'),
+
+    # ── Route Directions (Uber-style road route for the map) ────────────────
+    path('route/', RouteDirectionsView.as_view(), name='route_directions'),
     path('<str:pk>/driver-view/', DriverServiceRequestDetailView.as_view(), name='driver_service_detail'),
     path('<str:pk>/', ServiceRequestDetailView.as_view(), name='service_detail'),
 ]

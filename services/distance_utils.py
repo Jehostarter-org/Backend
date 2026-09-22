@@ -245,6 +245,121 @@ def haversine_distance(coord1, coord2):
     }
 
 
+def _route_ors(start_coords, end_coords):
+    """
+    Full driving route geometry from OpenRouteService.
+    Returns dict with coordinates (list of [lat, lng] points), distance_km,
+    duration_min, distance_type — or None on failure.
+    """
+    if not ORS_API_KEY:
+        logger.warning("ORS_API_KEY not set — skipping ORS route")
+        return None
+
+    try:
+        url = f"{ORS_BASE_URL}/v2/directions/driving-car"
+        # ORS expects [longitude, latitude] order; geometry_format=geojson
+        # returns the polyline as GeoJSON so we can draw it on the map.
+        payload = {
+            "coordinates": [
+                [start_coords[1], start_coords[0]],
+                [end_coords[1], end_coords[0]],
+            ],
+            "geometry_format": "geojson",
+        }
+        headers = {
+            "Authorization": ORS_API_KEY,
+            "Content-Type": "application/json",
+        }
+
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+
+        if response.status_code == 200:
+            routes = response.json().get("routes", [])
+            if routes:
+                route = routes[0]
+                summary = route["summary"]
+                coords = route["geometry"]["coordinates"]  # [[lon, lat], ...]
+                return {
+                    "coordinates": [[float(lat), float(lng)] for lng, lat in coords],
+                    "distance_km": round(summary["distance"] / 1000, 2),
+                    "duration_min": round(summary["duration"] / 60, 2),
+                    "distance_type": "routing",
+                }
+        else:
+            logger.warning("ORS route failed (%s): %s", response.status_code, response.text)
+    except Exception as exc:
+        logger.error("ORS route error: %s", exc)
+
+    return None
+
+
+def _route_graphhopper(start_coords, end_coords):
+    """
+    Full driving route geometry from GraphHopper (fallback when ORS fails).
+    Returns dict with coordinates (list of [lat, lng] points), distance_km,
+    duration_min, distance_type — or None on failure.
+    """
+    gh_key = getattr(settings, 'GRAPH_HOPPER_API_KEY', None)
+    if not gh_key:
+        logger.warning("GRAPH_HOPPER_API_KEY not set — skipping GraphHopper route")
+        return None
+
+    try:
+        url = f"{GRAPH_HOPPER_BASE}/route"
+        # points_encoded=false returns GeoJSON coordinates so we can draw them.
+        params = {
+            "point": [f"{start_coords[0]},{start_coords[1]}", f"{end_coords[0]},{end_coords[1]}"],
+            "vehicle": "car",
+            "locale": "en",
+            "key": gh_key,
+            "type": "json",
+            "points_encoded": "false",
+        }
+        response = requests.get(url, params=params, timeout=15)
+
+        if response.status_code == 200:
+            paths = response.json().get("paths", [])
+            if paths:
+                path = paths[0]
+                coords = path["points"]["coordinates"]  # [[lon, lat], ...]
+                return {
+                    "coordinates": [[float(lat), float(lng)] for lng, lat in coords],
+                    "distance_km": round(path["distance"] / 1000, 2),
+                    "duration_min": round((path["time"] / 1000) / 60, 2),
+                    "distance_type": "routing",
+                }
+        else:
+            logger.warning("GraphHopper route failed (%s): %s", response.status_code, response.text)
+    except Exception as exc:
+        logger.error("GraphHopper route error: %s", exc)
+
+    return None
+
+
+def get_route_coordinates(start_coords, end_coords):
+    """
+    Driving route as a polyline of [lat, lng] points (Uber-style road route,
+    not a straight line). Tries OpenRouteService, falls back to GraphHopper,
+    then to a straight two-point line so the map still renders.
+    Returns dict with coordinates, distance_km, duration_min, distance_type.
+    """
+    result = _route_ors(start_coords, end_coords)
+    if not result:
+        result = _route_graphhopper(start_coords, end_coords)
+
+    if not result:
+        logger.info("Routing unavailable — using straight-line fallback")
+        haversine = haversine_distance(start_coords, end_coords)
+        result = {
+            "coordinates": [[start_coords[0], start_coords[1]], [end_coords[0], end_coords[1]]],
+            "distance_km": haversine["distance_km"],
+            "duration_min": haversine["duration_min"],
+            "distance_type": "straight_line",
+        }
+
+    return result
+
+
 def calculate_distance_from_coords(pickup_lat, pickup_lon, arrival_lat, arrival_lon):
     """
     Calculate driving distance from pre-geocoded coordinates.
