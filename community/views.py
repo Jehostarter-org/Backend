@@ -9,6 +9,10 @@ from django.db.models.functions import Coalesce
 import uuid
 from .models import Community, CommunityMember, Post, Comment, PostLike, PostReport, Message
 from .message_notifications import notify_community_members
+from .join_notifications import (
+    notify_admins_of_join_request, notify_join_result,
+    clear_join_request_notifications,
+)
 from .serializers import (
     CommunitySerializer, CommunityMemberSerializer,
     PostSerializer, CommentSerializer, PostReportSerializer, MessageSerializer,
@@ -20,7 +24,7 @@ from django.utils import timezone
 from django.core.mail import send_mail
 from django.conf import settings as django_settings
 from .models import CommunityInvite
-from .broadcast import broadcast_to_community, broadcast_global_event, broadcast_to_user
+from .broadcast import broadcast_to_community, broadcast_global_event
 from shops.models import ShopListing
 
 
@@ -205,38 +209,24 @@ class JoinCommunityView(APIView):
             member = CommunityMember.objects.create(
                 community=community, user=request.user, status='pending',
             )
-            # notify admins
-            admin_ids = CommunityMember.objects.filter(
-                community=community, role__in=['admin', 'moderator'], is_banned=False,
-            ).values_list('user_id', flat=True)
-            for uid in admin_ids:
-                broadcast_to_user(str(uid), 'join_request', {
-                    'community_id': str(community.pk),
-                    'community_name': community.name,
-                    'user_id': str(request.user.pk),
-                    'username': request.user.username,
-                })
+            notify_admins_of_join_request(community, request.user, member)
             return Response({'detail': 'Request sent. Waiting for admin approval.', 'status': 'pending'})
 
-        member = CommunityMember.objects.create(community=community, user=request.user, status='approved', approved_at=timezone.now())
-        member_count = CommunityMember.objects.filter(community_id=pk, status='approved').count()
-        Community.objects.filter(pk=pk).update(member_count=member_count)
-
-        avatar_url = None
-        try:
-            avatar_field = getattr(request.user, 'avatar', None) or getattr(request.user, 'profile_picture', None)
-            if avatar_field:
-                avatar_url = avatar_field.url
-        except Exception:
-            pass
+        member = CommunityMember.objects.create(
+            community=community, user=request.user, status='approved',
+            approved_at=timezone.now(),
+        )
+        member_count = CommunityMember.objects.filter(community=community, status='approved').count()
+        Community.objects.filter(pk=community.pk).update(member_count=member_count)
         broadcast_to_community(str(pk), 'member_joined', {
             'user_id': str(request.user.pk),
             'username': request.user.username,
-            'avatar': avatar_url,
             'member_count': member_count,
         })
-
-        return Response({'detail': 'Joined community.'})
+        return Response({
+            'detail': 'You have successfully joined the community.',
+            'community_id': community.pk,
+        })
 
 
 class LeaveCommunityView(APIView):
@@ -313,10 +303,8 @@ class ApproveMemberView(APIView):
             'username': member.user.username,
             'member_count': member_count,
         })
-        broadcast_to_user(str(member.user_id), 'join_approved', {
-            'community_id': str(pk),
-            'community_name': Community.objects.get(pk=pk).name,
-        })
+        notify_join_result(member, member.community, approved=True)
+        clear_join_request_notifications(pk, member_pk)
         return Response({'detail': 'Member approved.'})
 
 
@@ -332,10 +320,8 @@ class RejectMemberView(APIView):
             return Response({'detail': 'Pending request not found.'}, status=404)
         member.status = 'rejected'
         member.save(update_fields=['status'])
-        broadcast_to_user(str(member.user_id), 'join_rejected', {
-            'community_id': str(pk),
-            'community_name': Community.objects.get(pk=pk).name,
-        })
+        notify_join_result(member, member.community, approved=False)
+        clear_join_request_notifications(pk, member_pk)
         return Response({'detail': 'Request rejected.'})
 
 

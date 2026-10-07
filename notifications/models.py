@@ -14,6 +14,8 @@ class Notification(models.Model):
     NOTIF_TYPES = [
         ('community_post',    'New Community Post'),
         ('community_message', 'New Community Message'),
+        ('community_join_request', 'Community Join Request'),
+        ('community_join_result',  'Community Join Result'),
         ('comment',           'Comment on Post'),
         ('like',              'Post Liked'),
         ('mention',           'You were Mentioned'),
@@ -41,6 +43,7 @@ class Notification(models.Model):
     is_read           = models.BooleanField(default=False)
     read_at           = models.DateTimeField(null=True, blank=True)
     link              = models.CharField(max_length=300, blank=True)
+    data              = models.JSONField(null=True, blank=True)
     created_at        = models.DateTimeField(auto_now_add=True)
 
     class Meta:
