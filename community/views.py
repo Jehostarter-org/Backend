@@ -199,23 +199,37 @@ class JoinCommunityView(APIView):
 
         existing = CommunityMember.objects.filter(community=community, user=request.user).first()
         if existing:
-            if existing.status == 'pending':
-                return Response({'detail': 'Request already pending.'}, status=400)
             if existing.is_banned:
                 return Response({'detail': 'You are banned from this community.'}, status=403)
-            return Response({'detail': 'Already a member.'}, status=400)
+            if existing.status == 'pending':
+                return Response({'detail': 'Request already pending.'}, status=400)
+            if existing.status == 'approved':
+                return Response({'detail': 'Already a member.'}, status=400)
+        # status == 'rejected' (or no row): fall through and re-request/re-join
 
         if community.require_approval:
-            member = CommunityMember.objects.create(
-                community=community, user=request.user, status='pending',
-            )
+            if existing:
+                existing.status = 'pending'
+                existing.joined_at = timezone.now()
+                existing.save(update_fields=['status', 'joined_at'])
+                member = existing
+            else:
+                member = CommunityMember.objects.create(
+                    community=community, user=request.user, status='pending',
+                )
             notify_admins_of_join_request(community, request.user, member)
             return Response({'detail': 'Request sent. Waiting for admin approval.', 'status': 'pending'})
 
-        member = CommunityMember.objects.create(
-            community=community, user=request.user, status='approved',
-            approved_at=timezone.now(),
-        )
+        if existing:
+            existing.status = 'approved'
+            existing.approved_at = timezone.now()
+            existing.joined_at = timezone.now()
+            existing.save(update_fields=['status', 'approved_at', 'joined_at'])
+        else:
+            CommunityMember.objects.create(
+                community=community, user=request.user, status='approved',
+                approved_at=timezone.now(),
+            )
         member_count = CommunityMember.objects.filter(community=community, status='approved').count()
         Community.objects.filter(pk=community.pk).update(member_count=member_count)
         broadcast_to_community(str(pk), 'member_joined', {
@@ -234,7 +248,7 @@ class LeaveCommunityView(APIView):
 
     def delete(self, request, pk):
         CommunityMember.objects.filter(community_id=pk, user=request.user).delete()
-        member_count = CommunityMember.objects.filter(community_id=pk).count()
+        member_count = CommunityMember.objects.filter(community_id=pk, status='approved').count()
         Community.objects.filter(pk=pk).update(member_count=member_count)
         broadcast_to_community(str(pk), 'member_left', {
             'user_id': str(request.user.pk),
@@ -580,7 +594,7 @@ class RemoveMemberView(APIView):
         ).delete()
         if not deleted:
             return Response({'detail': 'Member not found.'}, status=404)
-        member_count = CommunityMember.objects.filter(community_id=pk).count()
+        member_count = CommunityMember.objects.filter(community_id=pk, status='approved').count()
         Community.objects.filter(pk=pk).update(member_count=member_count)
         broadcast_to_community(str(pk), 'member_removed', {
             'user_id': str(user_pk),
@@ -711,30 +725,44 @@ class AcceptInviteView(APIView):
 
         existing = CommunityMember.objects.filter(community=community, user=request.user).first()
         if existing:
+            if existing.is_banned:
+                return Response({'detail': 'You are banned from this community.'}, status=403)
             if existing.status == 'pending':
                 return Response({'detail': 'Your request is still pending approval.'}, status=400)
-            return Response({'detail': 'You are already a member of this community.'}, status=400)
-
-        if existing and existing.is_banned:
-            return Response({'detail': 'You are banned from this community.'}, status=403)
+            if existing.status == 'approved':
+                return Response({'detail': 'You are already a member of this community.'}, status=400)
+        # status == 'rejected' (or no row): fall through and re-join via invite
 
         if community.require_approval:
-            member = CommunityMember.objects.create(
-                community=community, user=request.user, status='pending',
-            )
+            if existing:
+                existing.status = 'pending'
+                existing.joined_at = timezone.now()
+                existing.save(update_fields=['status', 'joined_at'])
+                member = existing
+            else:
+                member = CommunityMember.objects.create(
+                    community=community, user=request.user, status='pending',
+                )
             invite.used = True
             invite.used_at = timezone.now()
             invite.save(update_fields=['used', 'used_at'])
+            notify_admins_of_join_request(community, request.user, member)
             return Response({
                 'detail': 'Request sent. Waiting for admin approval.',
                 'community_id': community.pk,
                 'status': 'pending',
             })
 
-        member = CommunityMember.objects.create(
-            community=community, user=request.user, status='approved',
-            approved_at=timezone.now(),
-        )
+        if existing:
+            existing.status = 'approved'
+            existing.approved_at = timezone.now()
+            existing.joined_at = timezone.now()
+            existing.save(update_fields=['status', 'approved_at', 'joined_at'])
+        else:
+            CommunityMember.objects.create(
+                community=community, user=request.user, status='approved',
+                approved_at=timezone.now(),
+            )
 
         # Mark invite as used
         invite.used    = True

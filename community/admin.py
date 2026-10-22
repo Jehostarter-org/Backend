@@ -193,7 +193,7 @@ class CommunityAdmin(admin.ModelAdmin):
     
     def reset_stats(self, request, queryset):
         for community in queryset:
-            community.member_count = community.members.filter(is_banned=False).count()
+            community.member_count = community.members.filter(status='approved').count()
             community.post_count = community.posts.filter(is_deleted=False).count()
             community.save()
         self.message_user(request, f'Stats reset for {queryset.count()} communities.')

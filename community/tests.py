@@ -3,12 +3,14 @@ Accept/Decline side effects (approve/reject), and the open-community path."""
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.utils import timezone
+from datetime import timedelta
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
 
 from notifications.models import Notification
 
-from .models import Community, CommunityMember
+from .models import Community, CommunityMember, CommunityInvite
 
 User = get_user_model()
 
@@ -204,3 +206,193 @@ class ApproveRejectNotificationTests(APITestCase):
             reverse('reject_member', args=[self.community.pk, 'doesnotexist']),
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class RejectedRejoinTests(APITestCase):
+    """A rejected applicant must be able to ask again. Previously join
+    returned 'Already a member.' 400 and the UI pretended they were in."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username='admin4', password='pass')
+        self.joiner = User.objects.create_user(username='joiner4', password='pass')
+        self.community = Community.objects.create(
+            name='Melbourne Creatives',
+            slug='melbourne-creatives',
+            description='Art',
+            creator=self.admin,
+            require_approval=True,
+        )
+        CommunityMember.objects.create(
+            community=self.community, user=self.admin, role='admin', status='approved',
+        )
+        self.rejected = CommunityMember.objects.create(
+            community=self.community, user=self.joiner, status='rejected',
+        )
+        self.client.force_authenticate(user=self.joiner)
+        self.join_url = reverse('join_community', args=[self.community.pk])
+
+    def test_rejected_member_re_requests_on_approval_community(self):
+        resp = self.client.post(self.join_url)
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['status'], 'pending')
+        self.rejected.refresh_from_db()
+        self.assertEqual(self.rejected.status, 'pending')
+        self.assertTrue(
+            Notification.objects.filter(
+                notification_type='community_join_request',
+                recipient=self.admin,
+                is_read=False,
+            ).exists()
+        )
+
+    def test_rejected_member_joins_open_community_immediately(self):
+        self.community.require_approval = False
+        self.community.save(update_fields=['require_approval'])
+
+        resp = self.client.post(self.join_url)
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(resp.data.get('status'), 'pending')
+        self.rejected.refresh_from_db()
+        self.assertEqual(self.rejected.status, 'approved')
+        self.assertIsNotNone(self.rejected.approved_at)
+        self.community.refresh_from_db()
+        approved = CommunityMember.objects.filter(
+            community=self.community, status='approved',
+        ).count()
+        self.assertEqual(self.community.member_count, approved)
+
+    def test_banned_rejected_member_still_blocked(self):
+        self.rejected.is_banned = True
+        self.rejected.save(update_fields=['is_banned'])
+
+        resp = self.client.post(self.join_url)
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_approved_member_join_still_returns_400(self):
+        CommunityMember.objects.filter(pk=self.rejected.pk).update(status='approved')
+
+        resp = self.client.post(self.join_url)
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(resp.data['detail'], 'Already a member.')
+
+
+class MemberCountTests(APITestCase):
+    """member_count must track approved members only — leave/remove
+    previously counted pending+rejected rows and inflated the count."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username='admin5', password='pass')
+        self.leaver = User.objects.create_user(username='leaver5', password='pass')
+        self.pending_user = User.objects.create_user(username='pending5', password='pass')
+        self.rejected_user = User.objects.create_user(username='rejected5', password='pass')
+        self.community = Community.objects.create(
+            name='Lagos Founders',
+            slug='lagos-founders',
+            description='Startups',
+            creator=self.admin,
+            require_approval=True,
+        )
+        CommunityMember.objects.create(
+            community=self.community, user=self.admin, role='admin', status='approved',
+        )
+        CommunityMember.objects.create(
+            community=self.community, user=self.leaver, status='approved',
+        )
+        CommunityMember.objects.create(
+            community=self.community, user=self.pending_user, status='pending',
+        )
+        CommunityMember.objects.create(
+            community=self.community, user=self.rejected_user, status='rejected',
+        )
+
+    def test_leave_recounts_approved_only(self):
+        self.client.force_authenticate(user=self.leaver)
+
+        resp = self.client.delete(reverse('leave_community', args=[self.community.pk]))
+
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.community.refresh_from_db()
+        self.assertEqual(self.community.member_count, 1)
+
+    def test_admin_remove_recounts_approved_only(self):
+        self.client.force_authenticate(user=self.admin)
+
+        resp = self.client.delete(
+            reverse('remove_member', args=[self.community.pk, self.leaver.pk]),
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.community.refresh_from_db()
+        self.assertEqual(self.community.member_count, 1)
+
+
+class InviteRejoinTests(APITestCase):
+    """Invite links had the same rejected-block bug, a dead banned check,
+    and never notified admins when they created a pending request."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.admin = User.objects.create_user(username='admin6', password='pass')
+        self.joiner = User.objects.create_user(username='joiner6', password='pass')
+        self.community = Community.objects.create(
+            name='Paris Expats',
+            slug='paris-expats',
+            description='Expats',
+            creator=self.admin,
+            require_approval=True,
+        )
+        CommunityMember.objects.create(
+            community=self.community, user=self.admin, role='admin', status='approved',
+        )
+        self.invite = CommunityInvite.objects.create(
+            community=self.community,
+            invited_by=self.admin,
+            token='tok123',
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        self.client.force_authenticate(user=self.joiner)
+        self.accept_url = reverse('accept_invite', args=[self.invite.token])
+
+    def test_fresh_invite_pending_notifies_admins_and_marks_invite_used(self):
+        resp = self.client.post(self.accept_url)
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['status'], 'pending')
+        member = CommunityMember.objects.get(community=self.community, user=self.joiner)
+        self.assertEqual(member.status, 'pending')
+        self.invite.refresh_from_db()
+        self.assertTrue(self.invite.used)
+        self.assertTrue(
+            Notification.objects.filter(
+                notification_type='community_join_request',
+                recipient=self.admin,
+                is_read=False,
+            ).exists()
+        )
+
+    def test_rejected_member_can_re_join_via_invite(self):
+        CommunityMember.objects.create(
+            community=self.community, user=self.joiner, status='rejected',
+        )
+
+        resp = self.client.post(self.accept_url)
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['status'], 'pending')
+        member = CommunityMember.objects.get(community=self.community, user=self.joiner)
+        self.assertEqual(member.status, 'pending')
+
+    def test_banned_member_invite_returns_403(self):
+        CommunityMember.objects.create(
+            community=self.community, user=self.joiner, status='rejected', is_banned=True,
+        )
+
+        resp = self.client.post(self.accept_url)
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
