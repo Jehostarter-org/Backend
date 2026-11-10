@@ -321,7 +321,7 @@ class PropertyCreateUpdateSerializer(serializers.ModelSerializer):
             'price_type':        {'required': False, 'default': 'monthly'},
             'bedrooms':          {'required': False, 'default': 1},
             'bathrooms':         {'required': False, 'default': 1},
-            'country':           {'required': False, 'default': 'NG'},
+            'country':           {'required': False, 'default': 'AU'},
             'amenities':         {'required': False, 'default': list},
             'images':            {'required': False, 'default': list},
             'house_rules':       {'required': False, 'default': list},

@@ -35,6 +35,17 @@ class ServiceRequest(models.Model):
     status       = models.CharField(max_length=20, choices=STATUS, default='pending')
     price        = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     currency     = models.CharField(max_length=3, blank=True)
+    payment_id   = models.CharField(max_length=26, blank=True, help_text="Payment ULID in payment service")
+    payment_status = models.CharField(max_length=20, default='unpaid', choices=[
+        ('unpaid', 'Unpaid'),
+        ('authorized', 'Authorized Hold'),
+        ('captured', 'Captured / Paid'),
+        ('released', 'Released / Canceled'),
+        ('refunded', 'Refunded'),
+    ])
+    platform_fee = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    provider_payout = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    transfer_group = models.CharField(max_length=100, blank=True)
     notes        = models.TextField(blank=True)
     created_at   = models.DateTimeField(auto_now_add=True)
     updated_at   = models.DateTimeField(auto_now=True)
@@ -283,6 +294,12 @@ class ServiceProviderProfile(models.Model):
         null=True, blank=True, related_name='reviewed_provider_profiles'
     )
     reviewed_at      = models.DateTimeField(null=True, blank=True)
+
+    # ── Stripe Connect Account ────────────────────────────────────────────────
+    stripe_account_id = models.CharField(max_length=100, blank=True, help_text="Stripe Connect account ID (acct_...)")
+    stripe_onboarding_completed = models.BooleanField(default=False)
+    stripe_charges_enabled = models.BooleanField(default=False)
+    stripe_payouts_enabled = models.BooleanField(default=False)
 
     # ── Personal Information ──────────────────────────────────────────────────
     first_name = models.CharField(max_length=100, blank=True)

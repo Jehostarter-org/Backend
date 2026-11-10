@@ -1,6 +1,10 @@
 from django.conf import settings
 from rest_framework import serializers
-from .models import Shop, Category, ShopListing, ListingImage, BoostRequest, ShopDocument, ShopApprovalRequest, SavedListing
+from .models import (
+    Shop, Category, ShopListing, ListingImage, BoostRequest,
+    ShopDocument, ShopApprovalRequest, SavedListing,
+    Order, InstallmentSchedule,
+)
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -365,3 +369,29 @@ class DocumentReviewSerializer(serializers.Serializer):
         if data['status'] == 'rejected' and not data.get('rejection_reason'):
             raise serializers.ValidationError("Rejection reason is required for rejected documents")
         return data
+
+
+class InstallmentScheduleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InstallmentSchedule
+        fields = [
+            'id', 'installment_number', 'amount', 'platform_fee_amount',
+            'seller_amount', 'due_date', 'status', 'payment_id', 'paid_at', 'created_at',
+        ]
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    installments = InstallmentScheduleSerializer(many=True, read_only=True)
+    listing_title = serializers.ReadOnlyField(source='listing.title')
+    shop_name = serializers.ReadOnlyField(source='shop.name')
+
+    class Meta:
+        model = Order
+        fields = [
+            'id', 'buyer', 'shop', 'shop_name', 'listing', 'listing_title',
+            'total_price', 'currency', 'payment_type', 'status',
+            'stripe_customer_id', 'stripe_payment_method_id', 'transfer_group',
+            'rejection_reason', 'installments', 'created_at', 'updated_at',
+        ]
+        read_only_fields = ['buyer', 'status', 'created_at', 'updated_at']
+

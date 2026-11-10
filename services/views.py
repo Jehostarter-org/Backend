@@ -334,7 +334,7 @@ class CalculateDistanceView(APIView):
             )
 
         # Use the trip's country (pickup) for pricing, fall back to user profile country
-        country_code = pickup_country or request.user.current_country or 'NG'
+        country_code = pickup_country or request.user.current_country or 'AU'
         per_km_rate = get_vehicle_rate(country_code, vehicle_type)
         flag_drop = get_flag_drop(country_code)
         min_fare = get_min_fare(country_code)
@@ -550,7 +550,7 @@ class UpdateServiceRequestDistanceView(APIView):
             sr.arrival_address = arrival_address
 
         # ── Calculate distance + price ──────────────────────────────────
-        country_code = sr.country_code or request.user.current_country or 'NG'
+        country_code = sr.country_code or request.user.current_country or 'AU'
         city = sr.city or request.user.city or ''
 
         # Prefer coordinates from frontend autocomplete; fall back to geocoding
@@ -830,11 +830,63 @@ class UpdateTripStatusView(APIView):
         sr.status = mapped_status
         if notes:
             sr.notes = f"{sr.notes}\n{notes}".strip() if sr.notes else notes
+
+        # Payment completion & payout flow (Scenarios A & C)
+        if mapped_status == 'completed' and sr.payment_id and sr.payment_status in ('authorized', 'held', 'pending'):
+            from utils.payment_client import payment_client
+            final_amount = float(request.data.get('final_amount') or sr.price or 0.0)
+            if final_amount > 0:
+                # 15% platform commission deduction
+                platform_fee = round(final_amount * 0.15, 2)
+                provider_payout = round(final_amount - platform_fee, 2)
+                try:
+                    payment_client.capture_payment(
+                        payment_id=sr.payment_id,
+                        amount=final_amount,
+                    )
+                    sr.payment_status = 'captured'
+                    sr.platform_fee = platform_fee
+                    sr.provider_payout = provider_payout
+
+                    # Stripe Connect transfer to provider
+                    provider_profile = ServiceProviderProfile.objects.filter(
+                        user=sr.provider,
+                        service_type=sr.service_type,
+                    ).first()
+                    if provider_profile and provider_profile.stripe_account_id:
+                        group_name = sr.transfer_group or f"sr_{sr.id}"
+                        sr.transfer_group = group_name
+                        payment_client.transfer_funds(
+                            destination_account=provider_profile.stripe_account_id,
+                            amount=provider_payout,
+                            currency=sr.currency or 'USD',
+                            source_payment_id=sr.payment_id,
+                            transfer_group=group_name,
+                            metadata={
+                                'service_request_id': str(sr.id),
+                                'provider_id': str(sr.provider.id),
+                                'service_type': sr.service_type,
+                            }
+                        )
+                except Exception as exc:
+                    logger.error("Payment capture or transfer failed for ServiceRequest %s: %s", sr.id, exc)
+
+        elif mapped_status == 'cancelled' and sr.payment_id and sr.payment_status in ('authorized', 'held'):
+            from utils.payment_client import payment_client
+            try:
+                payment_client.release_hold(sr.payment_id)
+                sr.payment_status = 'released'
+            except Exception as exc:
+                logger.error("Hold release failed on cancellation for ServiceRequest %s: %s", sr.id, exc)
+
         sr.save()
 
         return Response({
             'service_id': sr.id,
             'status': sr.status,
+            'payment_status': sr.payment_status,
+            'platform_fee': float(sr.platform_fee) if sr.platform_fee else 0.0,
+            'provider_payout': float(sr.provider_payout) if sr.provider_payout else 0.0,
             'message': f'Trip status updated to {mapped_status}',
         }, status=status.HTTP_200_OK)
 
@@ -942,7 +994,7 @@ class VehiclePricingView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        country_code = request.query_params.get('country') or request.user.current_country or 'NG'
+        country_code = request.query_params.get('country') or request.user.current_country or 'AU'
         currency = django_settings.COUNTRY_CURRENCY_MAP.get(country_code, 'USD')
         flag_drop = get_flag_drop(country_code)
         min_fare = get_min_fare(country_code)
@@ -983,7 +1035,7 @@ class ConfirmVehicleView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        country_code = sr.country_code or request.user.current_country or 'NG'
+        country_code = sr.country_code or request.user.current_country or 'AU'
         per_km_rate = get_vehicle_rate(country_code, vehicle_type)
         flag_drop = get_flag_drop(country_code)
         min_fare = get_min_fare(country_code)
@@ -1614,3 +1666,189 @@ class AdminProviderStatsView(APIView):
                 'pending_chaperones': ServiceProviderProfile.objects.filter(service_type='chaperone', approval_status='pending').count(),
             },
         })
+
+
+# ── Stripe Payment & Escrow Service Views ────────────────────────────────────
+
+class ServiceRequestPaymentHoldView(APIView):
+    """
+    POST /api/services/<pk>/authorize-hold/
+    Places a pre-authorization hold (capture_method='manual') on the customer's payment method
+    for chauffeur/driver or chaperone service requests.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        sr = get_object_or_404(ServiceRequest, pk=pk)
+        requester = getattr(sr, 'requester', getattr(sr, 'user', None))
+        if requester != request.user and not request.user.is_staff:
+            return Response({'detail': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        payment_method_id = request.data.get('payment_method_id')
+        amount = request.data.get('amount') or getattr(sr, 'price', None) or getattr(sr, 'estimated_price', None) or 0
+        currency = getattr(sr, 'currency', 'USD') or 'USD'
+
+        from utils.payment_client import payment_client
+        try:
+            pay_resp = payment_client.create_payment(
+                user_id=request.user.id,
+                amount=float(amount),
+                currency=currency,
+                purpose=f"service_hold_{sr.service_type}",
+                resource_type='service_request',
+                resource_id=str(sr.id),
+                idempotency_key=f"hold_{sr.id}_{int(timezone.now().timestamp())}",
+                metadata={
+                    'service_request_id': str(sr.id),
+                    'service_type': sr.service_type,
+                },
+            )
+            payment_id = pay_resp.get('id')
+            client_secret = pay_resp.get('client_secret')
+
+            hold_resp = payment_client.create_hold(
+                payment_id=payment_id,
+                payment_method_id=payment_method_id,
+                customer_id=getattr(request.user, 'stripe_customer_id', getattr(request.user, 'customer_id', None)),
+                transfer_group=f"service_request_{sr.id}",
+            )
+
+            sr.payment_id = payment_id or ''
+            sr.payment_status = 'authorized'
+            sr.save()
+
+            return Response({
+                'status': 'authorized',
+                'payment_id': payment_id,
+                'client_secret': client_secret,
+                'hold_id': hold_resp.get('hold_id') or payment_id,
+                'amount': float(amount),
+                'currency': currency,
+                'message': 'Pre-authorization hold placed successfully.',
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.error("Failed to authorize hold for ServiceRequest %s: %s", sr.id, exc)
+            return Response({'detail': "Payment could not be processed. Please check your card details or try another card."}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+class CancelServiceRequestView(APIView):
+    """
+    POST /api/services/<pk>/cancel/
+    Cancels a service request and immediately voids/releases any pre-authorization hold.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        sr = get_object_or_404(ServiceRequest, pk=pk)
+        requester = getattr(sr, 'requester', getattr(sr, 'user', None))
+        if requester != request.user and not request.user.is_staff:
+            return Response({'detail': 'Permission denied.'}, status=status.HTTP_403_FORBIDDEN)
+
+        reason = request.data.get('reason', 'Customer requested cancellation')
+        from utils.payment_client import payment_client
+
+        if sr.payment_id and getattr(sr, 'payment_status', '') in ('authorized', 'unpaid', 'pending'):
+            try:
+                payment_client.release_hold(payment_id=sr.payment_id, reason=reason)
+                sr.payment_status = 'released'
+            except Exception as exc:
+                logger.error("Failed to release hold during cancellation of ServiceRequest %s: %s", sr.id, exc)
+
+        sr.status = 'cancelled'
+        sr.save()
+        return Response({
+            'status': 'cancelled',
+            'payment_status': getattr(sr, 'payment_status', 'released'),
+            'message': 'Service request cancelled and authorization hold released.',
+        }, status=status.HTTP_200_OK)
+
+
+class ProviderStripeConnectOnboardingView(APIView):
+    """
+    POST /api/services/provider-profiles/stripe-connect/
+    Creates a Stripe Express connected account for the service provider (driver/chaperone)
+    and generates an onboarding link for account verification.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        profile = ServiceProviderProfile.objects.filter(user=request.user).first()
+        if not profile:
+            return Response({'detail': 'Service provider profile not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        from utils.payment_client import payment_client
+        try:
+            if not profile.stripe_account_id:
+                acc_resp = payment_client.create_connected_account(
+                    email=request.user.email,
+                    country=getattr(profile, 'country_code', 'US') or 'US',
+                    business_type='individual',
+                    metadata={
+                        'profile_id': str(profile.id),
+                        'user_id': str(request.user.id),
+                        'service_type': profile.service_type,
+                    }
+                )
+                profile.stripe_account_id = acc_resp.get('account_id')
+                profile.save(update_fields=['stripe_account_id'])
+
+            refresh_url = request.data.get('refresh_url') or f"{django_settings.FRONTEND_URL.rstrip('/')}/dashboard/payouts?connect=refresh"
+            return_url = request.data.get('return_url') or f"{django_settings.FRONTEND_URL.rstrip('/')}/dashboard/payouts?connect=return"
+
+            link_resp = payment_client.create_account_link(
+                account_id=profile.stripe_account_id,
+                refresh_url=refresh_url,
+                return_url=return_url,
+            )
+
+            return Response({
+                'account_id': profile.stripe_account_id,
+                'onboarding_url': link_resp.get('onboarding_url') or link_resp.get('url'),
+                'expires_at': link_resp.get('expires_at'),
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.error("Provider Stripe Connect onboarding error: %s", exc)
+            return Response({'detail': "Payout setup is temporarily unavailable. Please try again later or contact support."}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+class ProviderStripeConnectStatusView(APIView):
+    """
+    GET /api/services/provider-profiles/stripe-connect/
+    GET /api/services/provider-profiles/stripe-connect/status/
+    Fetches the verification and payout status of the provider's Stripe Connect account.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        profile = ServiceProviderProfile.objects.filter(user=request.user).first()
+        if not profile or not profile.stripe_account_id:
+            return Response({
+                'connected': False,
+                'account_id': getattr(profile, 'stripe_account_id', None),
+                'charges_enabled': False,
+                'payouts_enabled': False,
+                'onboarding_completed': False,
+            }, status=status.HTTP_200_OK)
+
+        from utils.payment_client import payment_client
+        try:
+            acc = payment_client.get_connected_account(profile.stripe_account_id)
+            charges_enabled = acc.get('charges_enabled', False)
+            payouts_enabled = acc.get('payouts_enabled', False)
+            details_submitted = acc.get('details_submitted', False)
+
+            profile.stripe_charges_enabled = charges_enabled
+            profile.stripe_payouts_enabled = payouts_enabled
+            profile.stripe_onboarding_completed = details_submitted
+            profile.save(update_fields=['stripe_charges_enabled', 'stripe_payouts_enabled', 'stripe_onboarding_completed'])
+
+            return Response({
+                'connected': True,
+                'account_id': profile.stripe_account_id,
+                'charges_enabled': charges_enabled,
+                'payouts_enabled': payouts_enabled,
+                'onboarding_completed': profile.stripe_onboarding_completed,
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.error("Failed to fetch provider Stripe account %s: %s", profile.stripe_account_id, exc)
+            return Response({'detail': "We could not load your payout status right now. Please try again later."}, status=status.HTTP_502_BAD_GATEWAY)

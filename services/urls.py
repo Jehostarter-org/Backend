@@ -40,6 +40,10 @@ from .views import (
     AdminProcessProviderApprovalView,
     AdminProviderStatsView,
     RouteDirectionsView,
+    CancelServiceRequestView,
+    ServiceRequestPaymentHoldView,
+    ProviderStripeConnectOnboardingView,
+    ProviderStripeConnectStatusView,
 )
 
 urlpatterns = [
@@ -73,12 +77,16 @@ urlpatterns = [
     # ── Vehicle confirmation (saves server-calculated price onto the request) ─
     path('<str:pk>/confirm-vehicle/', ConfirmVehicleView.as_view(), name='confirm_vehicle'),
 
-    # ── Distance Management ───────────────────────────────────────────────────
+    # ── Distance & Trip Management ───────────────────────────────────────────
     path('<str:pk>/update-distance/', UpdateServiceRequestDistanceView.as_view(), name='update_distance'),
     path('<str:pk>/track-driver/', TrackDriverLocationView.as_view(), name='track_driver'),
     path('<str:pk>/trip-status/', UpdateTripStatusView.as_view(), name='trip_status'),
+    path('<str:pk>/authorize-hold/', ServiceRequestPaymentHoldView.as_view(), name='service_authorize_hold'),
+    path('<str:pk>/cancel/', CancelServiceRequestView.as_view(), name='service_cancel'),
 
-    # ── Provider Registration ─────────────────────────────────────────────────
+    # ── Provider Registration & Stripe Connect ────────────────────────────────
+    path('provider-profiles/stripe-connect/status/', ProviderStripeConnectStatusView.as_view(), name='provider_stripe_connect_status'),
+    path('provider-profiles/stripe-connect/', ProviderStripeConnectOnboardingView.as_view(), name='provider_stripe_connect_onboarding'),
     path('provider-profiles/', ServiceProviderProfileListCreateView.as_view(), name='provider_profiles'),
     path('provider-profiles/<str:pk>/', ServiceProviderProfileDetailView.as_view(), name='provider_profile_detail'),
 

@@ -19,6 +19,13 @@ from memberships.views import (
     AdminEligibilityDetailView,
     AdminProcessEligibilityView,
     AdminEligibilityStatsView,
+    UpgradeMembershipView,
+)
+from memberships.internal_views import InternalPaymentCallbackView
+from memberships.payment_views import (
+    InitializePaymentView,
+    VerifyPaymentStatusView,
+    VerifyGoldPlanPaymentView,
 )
 
 urlpatterns = [
@@ -58,7 +65,20 @@ urlpatterns = [
     path('api/services/',                  include('services.urls')),
     path('api/community/',                 include('community.urls')),
     path('api/notifications/',             include('notifications.urls')),
-    path('api/messaging/',                 include('messaging.urls', namespace='messaging')),  # ← NEW
+    path('api/messaging/',                 include('messaging.urls', namespace='messaging')),
+
+    # ── Internal Service-to-Service Payment Callback (from Payment Microservice) ──
+    path('api/internal/payments/callback/', InternalPaymentCallbackView.as_view(), name='internal_payment_callback'),
+
+    # ── Payment & Plan Endpoints (Frontend RTK Compatibility) ─────────────────────
+    path('api/payments/initialize',          InitializePaymentView.as_view(),      name='payments_initialize'),
+    path('api/payments/initialize/',         InitializePaymentView.as_view(),      name='payments_initialize_slash'),
+    path('api/payments/verify/<str:reference>', VerifyPaymentStatusView.as_view(), name='payments_verify'),
+    path('api/payments/verify/<str:reference>/', VerifyPaymentStatusView.as_view(), name='payments_verify_slash'),
+    path('api/plans/gold/upgrade',           UpgradeMembershipView.as_view(),      name='plans_gold_upgrade'),
+    path('api/plans/gold/upgrade/',          UpgradeMembershipView.as_view(),      name='plans_gold_upgrade_slash'),
+    path('api/plan/verify/gold/plan/payment', VerifyGoldPlanPaymentView.as_view(), name='plan_verify_gold_payment'),
+    path('api/plan/verify/gold/plan/payment/', VerifyGoldPlanPaymentView.as_view(), name='plan_verify_gold_payment_slash'),
 ]
 
 # ── Media files ───────────────────────────────────────────────────────────────
