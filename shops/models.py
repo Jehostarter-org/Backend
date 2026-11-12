@@ -52,6 +52,10 @@ class Shop(models.Model):
     whatsapp  = models.CharField(max_length=20, blank=True)
     website   = models.URLField(blank=True)
 
+    # ── Stripe Connect Account ────────────────────────────────────────────────
+    stripe_account_id = models.CharField(max_length=100, blank=True, help_text="Stripe Connect account ID")
+    stripe_onboarding_completed = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -285,3 +289,75 @@ class ShopApprovalRequest(models.Model):
         self.admin_notes             = notes
         self.reviewed_by             = admin_user
         self.save()
+
+
+class Order(models.Model):
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+
+    PAYMENT_TYPE = [
+        ('full', 'Full Payment'),
+        ('installment', 'Installment Payment'),
+    ]
+    STATUS = [
+        ('pending', 'Pending Approval'),
+        ('approved', 'Approved'),
+        ('rejected', 'Rejected'),
+        ('in_fulfillment', 'In Fulfillment'),
+        ('completed', 'Completed'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    buyer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='shop_orders')
+    shop = models.ForeignKey(Shop, on_delete=models.CASCADE, related_name='orders')
+    listing = models.ForeignKey(ShopListing, on_delete=models.CASCADE, related_name='orders')
+    total_price = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default='USD')
+    payment_type = models.CharField(max_length=15, choices=PAYMENT_TYPE, default='installment')
+    status = models.CharField(max_length=20, choices=STATUS, default='pending')
+
+    # Installment & Off-session payment details
+    stripe_customer_id = models.CharField(max_length=100, blank=True)
+    stripe_payment_method_id = models.CharField(max_length=100, blank=True)
+    transfer_group = models.CharField(max_length=100, blank=True)
+    rejection_reason = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'shop_orders'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Order {self.id} – {self.listing.title} ({self.status})"
+
+
+class InstallmentSchedule(models.Model):
+    id = models.CharField(primary_key=True, max_length=26, default=generate_ulid, editable=False)
+
+    STATUS = [
+        ('pending', 'Pending'),
+        ('authorized', 'Authorized'),
+        ('paid', 'Paid'),
+        ('failed', 'Failed'),
+        ('refunded', 'Refunded'),
+    ]
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='installments')
+    installment_number = models.PositiveSmallIntegerField(default=1)  # 1, 2, 3, 4
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    platform_fee_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0.00)
+    seller_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+    due_date = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS, default='pending')
+
+    payment_id = models.CharField(max_length=26, blank=True)  # Payment ULID in microservice
+    paid_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'installment_schedules'
+        ordering = ['installment_number']
+
+    def __str__(self):
+        return f"Installment #{self.installment_number} for Order {self.order_id} ({self.status})"

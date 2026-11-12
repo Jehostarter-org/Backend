@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import timedelta
 
 from django.utils import timezone
@@ -17,6 +18,8 @@ from .serializers import (
     UpgradeMembershipSerializer,
     UserMembershipSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class MembershipPlanListView(generics.ListAPIView):
@@ -44,18 +47,127 @@ class UpgradeMembershipView(APIView):
         serializer.is_valid(raise_exception=True)
         user = request.user
         plan_name = serializer.validated_data['plan']
-        country   = user.current_country or 'NG'
+        country   = user.current_country or 'AU'
+        from decimal import Decimal
+        from django.conf import settings
+
+        currency = getattr(settings, 'COUNTRY_CURRENCY_MAP', {}).get(country, 'USD')
+        default_price = Decimal("25.00") if plan_name == "gold" else Decimal("10.00")
+        if currency == "NGN":
+            default_price = Decimal("35000.00") if plan_name == "gold" else Decimal("15000.00")
+
+        plan = MembershipPlan.objects.filter(plan=plan_name, country_code=country).first()
+        if not plan:
+            plan = MembershipPlan.objects.filter(plan=plan_name).first()
+        if not plan:
+            plan, _ = MembershipPlan.objects.get_or_create(
+                plan=plan_name,
+                country_code=country,
+                defaults={
+                    "price": default_price,
+                    "currency": currency,
+                    "duration_days": 30,
+                    "can_create_shop": True,
+                    "can_create_community": True,
+                    "can_join_community": True,
+                    "can_boost_products": True,
+                    "can_request_home_inspection": True,
+                    "can_use_airport_pickup": True,
+                    "can_use_chaperon": True,
+                    "max_shop_listings": 50,
+                },
+            )
+
+        payment_reference = (
+            request.data.get('payment_reference')
+            or request.data.get('paymentReference')
+            or serializer.validated_data.get('payment_reference', '')
+        ).strip()
+
+        # If payment_reference is passed, handle verification / completion
+        if payment_reference:
+            existing = user.memberships.filter(is_active=True, payment_reference=payment_reference).first()
+            if existing:
+                return Response(UserMembershipSerializer(existing).data, status=status.HTTP_200_OK)
+
+            from utils.payment_client import PaymentServiceClient
+            client = PaymentServiceClient()
+            try:
+                payment_info = client.get_payment(payment_reference)
+                if payment_info.get("status") == "paid":
+                    user.memberships.filter(is_active=True).update(is_active=False)
+                    membership = UserMembership.objects.create(
+                        user=user, plan=plan_name, country_code=country,
+                        expires_at=timezone.now() + timedelta(days=plan.duration_days),
+                        payment_reference=payment_reference,
+                        payment_gateway=payment_info.get("provider", "stripe"),
+                        amount_paid=plan.price,
+                        currency_paid=plan.currency,
+                    )
+                    return Response(UserMembershipSerializer(membership).data, status=status.HTTP_201_CREATED)
+            except Exception:
+                pass  # Fall through to standard checkout initiation
+
+        # Standard Option A: Monolith Orchestration to kick off Stripe Checkout
+        from django.conf import settings
+        from utils.payment_client import PaymentServiceClient, PaymentClientError
+
+        frontend_base = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+        success_url = serializer.validated_data.get('success_url') or f"{frontend_base}/customer-details/payment/verify?reference={{CHECKOUT_SESSION_ID}}&session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = serializer.validated_data.get('cancel_url') or f"{frontend_base}/customer-details/packages"
+
+        idempotency_key = f"upgrade_{plan_name}_{user.id}_{int(timezone.now().timestamp())}"
+        client = PaymentServiceClient()
+
         try:
-            plan = MembershipPlan.objects.get(plan=plan_name, country_code=country)
-        except MembershipPlan.DoesNotExist:
-            return Response({'detail': 'Plan not available in your country.'}, status=404)
-        user.memberships.filter(is_active=True).update(is_active=False)
-        membership = UserMembership.objects.create(
-            user=user, plan=plan_name, country_code=country,
-            expires_at=timezone.now() + timedelta(days=plan.duration_days),
-            payment_reference=serializer.validated_data['payment_reference'],
-        )
-        return Response(UserMembershipSerializer(membership).data, status=status.HTTP_201_CREATED)
+            payment = client.create_payment(
+                user_id=user.id,
+                amount=plan.price,
+                currency=plan.currency,
+                purpose=f"membership_upgrade_{plan_name}",
+                resource_type="membership",
+                resource_id=plan_name,
+                idempotency_key=idempotency_key,
+                metadata={
+                    "user_email": user.email,
+                    "country": country,
+                },
+            )
+            payment_id = payment.get("id")
+            initiate_res = client.initiate_payment(
+                payment_id=payment_id,
+                provider="stripe",
+                success_url=success_url,
+                cancel_url=cancel_url,
+                customer_email=user.email,
+            )
+
+            checkout_url = initiate_res.get("checkout_url")
+            session_id = initiate_res.get("session_id")
+
+            return Response({
+                "checkout_url": checkout_url,
+                "authorization_url": checkout_url,  # For frontend backwards-compatibility
+                "payment_id": payment_id,
+                "session_id": session_id,
+                "reference": session_id or payment_id,
+                "plan": plan_name,
+                "amount": str(plan.price),
+                "currency": plan.currency,
+                "status": "pending",
+            }, status=status.HTTP_200_OK)
+
+        except PaymentClientError as e:
+            logger.error("Payment gateway initialization failed: %s", e)
+            return Response(
+                {"detail": "Payment could not be started. Please try again later."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except Exception as e:
+            return Response(
+                {"detail": "Payment microservice is currently unreachable."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
 
 DOCUMENT_FIELD_MAP = {

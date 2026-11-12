@@ -9,6 +9,8 @@ from .views import (
     AdminAllShopApprovalsView, AdminShopApprovalDetailView,
     AdminProcessShopApprovalView, AdminReviewDocumentsView, AdminShopStatsView,
     AdminListingListView, AdminListingDeleteView,
+    CreateOrderView, AttachOrderPaymentMethodView, MyOrdersView, OrderDetailView,
+    AdminProcessOrderApprovalView, AdminOrderListView, ShopOrdersView, ShopStripeConnectOnboardingView, ShopStripeConnectStatusView,
 )
 
 urlpatterns = [
@@ -56,6 +58,19 @@ urlpatterns = [
     # �"?�"? Admin: shop items (all listings + delete) �"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�"?�
     path('admin/items/', AdminListingListView.as_view(), name='admin_listings_list'),
     path('admin/items/<str:pk>/', AdminListingDeleteView.as_view(), name='admin_listing_delete'),
+
+    # ── Orders & Installment Payments (Scenario B) ───────────────────────────
+    path('orders/', CreateOrderView.as_view(), name='create_order'),
+    path('orders/my/', MyOrdersView.as_view(), name='my_orders'),
+    path('orders/shop/', ShopOrdersView.as_view(), name='shop_orders'),
+    path('orders/<str:pk>/payment-method/', AttachOrderPaymentMethodView.as_view(), name='attach_order_payment_method'),
+    path('orders/<str:pk>/', OrderDetailView.as_view(), name='order_detail'),
+    path('admin/orders/', AdminOrderListView.as_view(), name='admin_orders_list'),
+    path('admin/orders/<str:pk>/process-approval/', AdminProcessOrderApprovalView.as_view(), name='admin_process_order_approval'),
+
+    # ── Seller Stripe Connect Onboarding ─────────────────────────────────────
+    path('stripe-connect/status/', ShopStripeConnectStatusView.as_view(), name='shop_stripe_connect_status'),
+    path('stripe-connect/', ShopStripeConnectOnboardingView.as_view(), name='shop_stripe_connect_onboarding'),
 
     # ── Shop detail (must stay last — catches /<shop_id>/) ───────────────────
     path('<str:pk>/', ShopDetailView.as_view(), name='shop_detail'),

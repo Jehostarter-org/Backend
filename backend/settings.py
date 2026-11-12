@@ -323,6 +323,12 @@ SUPPORTED_COUNTRIES      = list(COUNTRY_CURRENCY_MAP.keys())
 ORS_API_KEY              = config('ORS_API_KEY', default='')
 GRAPH_HOPPER_API_KEY     = config('GRAPH_HOPPER_API_KEY', default='')
 
+# ─── Payment Microservice Integration ─────────────────────────────────────────
+PAYMENT_SERVICE_URL     = config('PAYMENT_SERVICE_URL', default='http://payment_service:8001')
+INTERNAL_SERVICE_SECRET = config('INTERNAL_SERVICE_SECRET')
+PAYMENT_SERVICE_TOKEN   = config('PAYMENT_SERVICE_TOKEN', default=INTERNAL_SERVICE_SECRET)
+# FRONTEND_URL is defined once above (default https://jehostarter.com).
+
 # ─── Logging ──────────────────────────────────────────────────────────────────
 LOGGING = {
     'version': 1,

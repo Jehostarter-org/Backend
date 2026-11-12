@@ -17,7 +17,9 @@ class UserMembershipSerializer(serializers.ModelSerializer):
 
 class UpgradeMembershipSerializer(serializers.Serializer):
     plan              = serializers.ChoiceField(choices=['silver', 'gold'])
-    payment_reference = serializers.CharField()
+    payment_reference = serializers.CharField(required=False, allow_blank=True, default='')
+    success_url       = serializers.CharField(required=False, allow_blank=True, default='')
+    cancel_url        = serializers.CharField(required=False, allow_blank=True, default='')
 
 
 class EligibilityCheckSerializer(serializers.ModelSerializer):

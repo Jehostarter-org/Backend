@@ -1,21 +1,27 @@
-from rest_framework import generics, permissions, filters
-from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
-from rest_framework.response import Response
-from rest_framework.views import APIView
-from django.utils import timezone
+import logging
+import uuid
 from datetime import timedelta
 from django.conf import settings
 from django.contrib.gis.geos import Point
 from django.contrib.gis.db.models.functions import Distance
 from django.contrib.gis.measure import D
-from rest_framework import status
-from rest_framework.decorators import action
-from rest_framework.permissions import IsAdminUser
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from rest_framework import generics, permissions, filters, status
+from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
+from rest_framework.permissions import IsAdminUser
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+logger = logging.getLogger(__name__)
 
 from django.db.models import Q
-from .models import Shop, Category, ShopListing, BoostRequest, ShopDocument, ShopApprovalRequest, SavedListing
+from .models import (
+    Shop, Category, ShopListing, BoostRequest, ShopDocument,
+    ShopApprovalRequest, SavedListing, Order, InstallmentSchedule,
+)
 from .serializers import (
     ShopSerializer, CategorySerializer, ShopListingSerializer,
     BoostRequestSerializer, ShopCreateWithApprovalSerializer,
@@ -23,7 +29,7 @@ from .serializers import (
     AdminShopApprovalListSerializer, AdminShopApprovalDetailSerializer,
     AdminApprovalActionSerializer, DocumentReviewSerializer,
     ShopDocumentSerializer, SavedListingSerializer,
-    AdminListingListItemSerializer,
+    AdminListingListItemSerializer, OrderSerializer, InstallmentScheduleSerializer,
 )
 
 # Default search radius
@@ -713,3 +719,398 @@ class AdminListingDeleteView(APIView):
         title = listing.title
         listing.delete()
         return Response({'message': f'Item "{title}" deleted.'})
+
+
+# ── Scenario B: Marketplace Installments & Order Flows ───────────────────────
+
+def _charge_installment(order, installment):
+    """
+    Charge one installment from the buyer's saved card (off-session), keep the 10%
+    platform fee and transfer the rest to the seller's Stripe Connect account.
+    Raises on any payment failure so the caller can report it; the installment is only
+    marked paid when both the authorization and the capture succeeded.
+    """
+    from utils.payment_client import payment_client
+
+    charge_amount = float(installment.amount)
+    fee_amount = round(charge_amount * 0.10, 2)  # 10% platform commission
+    seller_payout = round(charge_amount - fee_amount, 2)
+    group = order.transfer_group or f"order_{order.id}"
+
+    pay_resp = payment_client.create_payment(
+        user_id=order.buyer_id,
+        amount=charge_amount,
+        currency=order.currency or 'USD',
+        purpose='shop_installment',
+        resource_type='order',
+        resource_id=str(order.id),
+        idempotency_key=f"order_{order.id}_inst_{installment.installment_number}",
+        metadata={
+            'order_id': str(order.id),
+            'installment_id': str(installment.id),
+            'installment_number': installment.installment_number,
+        },
+    )
+    payment_id = pay_resp.get('id')
+
+    # Authorize with the stored payment method, then capture straight away.
+    payment_client.create_hold(
+        payment_id=payment_id,
+        customer_id=order.stripe_customer_id or None,
+        payment_method_id=order.stripe_payment_method_id or None,
+        transfer_group=group,
+    )
+    payment_client.capture_payment(payment_id=payment_id)
+
+    installment.status = 'paid'
+    installment.paid_at = timezone.now()
+    installment.payment_id = payment_id or ''
+    installment.platform_fee_amount = fee_amount
+    installment.seller_amount = seller_payout
+    installment.save()
+
+    transferred = False
+    shop = order.shop
+    if shop.stripe_account_id:
+        payment_client.transfer_funds(
+            destination_account=shop.stripe_account_id,
+            amount=seller_payout,
+            currency=order.currency or 'USD',
+            source_payment_id=payment_id,
+            transfer_group=group,
+            metadata={
+                'order_id': str(order.id),
+                'installment_id': str(installment.id),
+                'shop_id': str(shop.id),
+            },
+        )
+        transferred = True
+
+    return {
+        'installment_paid': installment.installment_number,
+        'charged_amount': charge_amount,
+        'platform_fee': fee_amount,
+        'seller_payout': seller_payout,
+        'payment_id': payment_id,
+        'seller_transferred': transferred,
+    }
+
+
+class CreateOrderView(APIView):
+    """
+    POST /api/shops/orders/
+    Creates a new shop order (full or installment).
+    For installments, generates payment schedule and initiates a SetupIntent to save the card for off-session billing.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        listing_id = request.data.get('listing_id')
+        payment_type = request.data.get('payment_type', 'installment')
+        if payment_type not in ('full', 'installment'):
+            return Response({'detail': "payment_type must be 'full' or 'installment'."}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            installments_count = int(request.data.get('installments_count', 4))
+        except (TypeError, ValueError):
+            installments_count = 4
+        # 'weekly' -> due every 7 days, anything else (default 'monthly') -> every 30 days
+        interval_days = 7 if request.data.get('interval') == 'weekly' else 30
+
+        listing = get_object_or_404(ShopListing, pk=listing_id, is_available=True)
+
+        if listing.shop.owner == request.user:
+            return Response({'detail': 'You cannot purchase items from your own shop.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        total_price = listing.price
+        currency = listing.currency or 'USD'
+
+        order = Order.objects.create(
+            buyer=request.user,
+            shop=listing.shop,
+            listing=listing,
+            total_price=total_price,
+            currency=currency,
+            payment_type=payment_type,
+            status='pending',
+            transfer_group=f"order_{uuid.uuid4().hex[:12]}",
+        )
+
+        installments_data = []
+        # A full payment is simply one installment for the whole amount, so both kinds
+        # of order go through the same charge path.
+        if payment_type in ('full', 'installment'):
+            count = 1 if payment_type == 'full' else max(1, min(installments_count, 12))
+            base_amt = round(float(total_price) / count, 2)
+            for i in range(1, count + 1):
+                amt = base_amt if i < count else round(float(total_price) - (base_amt * (count - 1)), 2)
+                due_date = timezone.now() + timedelta(days=interval_days * (i - 1))
+                fee = round(amt * 0.10, 2)  # 10% platform commission
+                seller_net = round(amt - fee, 2)
+                inst = InstallmentSchedule.objects.create(
+                    order=order,
+                    installment_number=i,
+                    amount=amt,
+                    platform_fee_amount=fee,
+                    seller_amount=seller_net,
+                    due_date=due_date,
+                    status='pending',
+                )
+                installments_data.append(inst)
+
+        client_secret = None
+        customer_id = ''
+        from utils.payment_client import payment_client
+        try:
+            # customer_email makes the payment service create a Stripe Customer, which the
+            # saved card must belong to, otherwise it cannot be charged later off-session.
+            setup_res = payment_client.create_setup_intent(
+                customer_email=request.user.email,
+                customer_id=getattr(request.user, 'stripe_customer_id', '') or '',
+                metadata={
+                    'order_id': str(order.id),
+                    'buyer_id': str(request.user.id),
+                    'shop_id': str(listing.shop.id),
+                    'resource_type': 'order',
+                }
+            )
+            client_secret = setup_res.get('client_secret')
+            customer_id = setup_res.get('customer_id') or ''
+            if customer_id:
+                order.stripe_customer_id = customer_id
+                order.save(update_fields=['stripe_customer_id'])
+        except Exception as exc:
+            logger.warning("SetupIntent creation skipped/failed: %s", exc)
+
+        return Response({
+            'order': OrderSerializer(order).data,
+            'client_secret': client_secret,
+            'customer_id': customer_id,
+        }, status=status.HTTP_201_CREATED)
+
+
+class AttachOrderPaymentMethodView(APIView):
+    """
+    POST /api/shops/orders/<pk>/payment-method/
+    Attaches confirmed Stripe PaymentMethod and Customer to order for future installment charges.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk):
+        order = get_object_or_404(Order, pk=pk, buyer=request.user)
+        payment_method_id = request.data.get('payment_method_id')
+        customer_id = request.data.get('customer_id') or getattr(request.user, 'stripe_customer_id', '')
+
+        if not payment_method_id:
+            return Response({'detail': 'payment_method_id is required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        order.stripe_payment_method_id = payment_method_id
+        if customer_id:
+            order.stripe_customer_id = customer_id
+        order.save(update_fields=['stripe_payment_method_id', 'stripe_customer_id'])
+
+        data = {
+            'order_id': order.id,
+            'stripe_payment_method_id': order.stripe_payment_method_id,
+            'stripe_customer_id': order.stripe_customer_id,
+            'status': order.status,
+            'message': 'Payment method successfully attached to order.',
+        }
+
+        # Installment orders wait for admin approval (which charges installment #1).
+        # A full payment has no approval step, so charge it as soon as the card is saved.
+        if order.payment_type == 'full' and order.status == 'pending':
+            installment = order.installments.filter(installment_number=1).first()
+            if installment and installment.status != 'paid':
+                try:
+                    data.update(_charge_installment(order, installment))
+                    order.status = 'approved'
+                    order.save(update_fields=['status'])
+                    data['status'] = order.status
+                    data['message'] = 'Payment successful.'
+                except Exception as exc:
+                    logger.error("Full payment failed for Order %s: %s", order.id, exc)
+                    return Response({'detail': "Payment could not be processed. Please check your card details or try another card."}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response(data, status=status.HTTP_200_OK)
+
+
+class MyOrdersView(generics.ListAPIView):
+    """GET /api/shops/orders/ — List orders placed by current user."""
+    serializer_class = OrderSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Order.objects.filter(buyer=self.request.user).prefetch_related('installments', 'listing', 'shop')
+
+
+class OrderDetailView(generics.RetrieveAPIView):
+    """GET /api/shops/orders/<pk>/ — Retrieve order details and installment schedule."""
+    serializer_class = OrderSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        user = self.request.user
+        if user.is_staff:
+            return Order.objects.all().prefetch_related('installments', 'listing', 'shop')
+        return Order.objects.filter(
+            Q(buyer=user) | Q(shop__owner=user)
+        ).prefetch_related('installments', 'listing', 'shop')
+
+
+class AdminProcessOrderApprovalView(APIView):
+    """
+    POST /api/shops/admin/orders/<pk>/process-approval/
+    Admin approves or rejects an installment order.
+    On approve: automatically charges installment #1 off-session, retains 10% platform fee,
+    and transfers seller net amount to shop's Stripe Connected Account.
+    On reject: releases hold / marks order rejected.
+    """
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, pk):
+        order = get_object_or_404(Order, pk=pk)
+        action = request.data.get('action')
+        reason = request.data.get('reason', '')
+
+        if action not in ('approve', 'reject'):
+            return Response({'detail': "Action must be 'approve' or 'reject'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if action == 'reject':
+            order.status = 'rejected'
+            order.rejection_reason = reason
+            order.save(update_fields=['status', 'rejection_reason'])
+            return Response({
+                'order_id': order.id,
+                'status': order.status,
+                'rejection_reason': order.rejection_reason,
+                'message': 'Order rejected successfully.',
+            }, status=status.HTTP_200_OK)
+
+        # ── Approve flow: Charge installment #1 ──────────────────────────────
+        first_installment = order.installments.filter(installment_number=1).first()
+        if not first_installment:
+            return Response({'detail': 'No installment schedule found for this order.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = _charge_installment(order, first_installment)
+            order.status = 'approved'
+            order.save(update_fields=['status'])
+            return Response({
+                'order_id': order.id,
+                'status': order.status,
+                **result,
+                'message': 'Order approved and installment #1 processed.',
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.error("Failed to charge installment #1 for Order %s: %s", order.id, exc)
+            return Response({'detail': "Payment could not be processed. Please check your card details or try another card."}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+class AdminOrderListView(generics.ListAPIView):
+    """GET /api/shops/admin/orders/?status=pending — all orders, for the admin approval screen."""
+    serializer_class = OrderSerializer
+    permission_classes = [IsAdminUser]
+
+    def get_queryset(self):
+        qs = Order.objects.all().prefetch_related('installments', 'listing', 'shop')
+        order_status = self.request.query_params.get('status')
+        if order_status:
+            qs = qs.filter(status=order_status)
+        return qs
+
+
+class ShopOrdersView(generics.ListAPIView):
+    """GET /api/shops/orders/shop/ — orders placed on the current user's shop (seller view)."""
+    serializer_class = OrderSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return Order.objects.filter(shop__owner=self.request.user).prefetch_related('installments', 'listing', 'shop')
+
+
+# ── Shop Seller Stripe Connect Onboarding ─────────────────────────────────────
+
+class ShopStripeConnectOnboardingView(APIView):
+    """
+    POST /api/shops/stripe-connect/
+    Creates a Stripe Express connected account for the current user's shop and returns an onboarding URL.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        shop = getattr(request.user, 'shop', None)
+        if not shop:
+            return Response({'detail': 'You do not own a shop.'}, status=status.HTTP_404_NOT_FOUND)
+
+        from utils.payment_client import payment_client
+        try:
+            if not shop.stripe_account_id:
+                acc_resp = payment_client.create_connected_account(
+                    email=request.user.email,
+                    country=shop.country_code or 'US',
+                    business_type='company' if getattr(getattr(shop, 'approval_request', None), 'business_name', '') else 'individual',
+                    metadata={
+                        'shop_id': str(shop.id),
+                        'owner_id': str(request.user.id),
+                    }
+                )
+                shop.stripe_account_id = acc_resp.get('account_id')
+                shop.save(update_fields=['stripe_account_id'])
+
+            refresh_url = request.data.get('refresh_url') or f"{settings.FRONTEND_URL.rstrip('/')}/dashboard/payouts?connect=refresh"
+            return_url = request.data.get('return_url') or f"{settings.FRONTEND_URL.rstrip('/')}/dashboard/payouts?connect=return"
+
+            link_resp = payment_client.create_account_link(
+                account_id=shop.stripe_account_id,
+                refresh_url=refresh_url,
+                return_url=return_url,
+            )
+
+            return Response({
+                'account_id': shop.stripe_account_id,
+                'onboarding_url': link_resp.get('onboarding_url') or link_resp.get('url'),
+                'expires_at': link_resp.get('expires_at'),
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.error("Shop Stripe Connect onboarding error: %s", exc)
+            return Response({'detail': "Payout setup is temporarily unavailable. Please try again later or contact support."}, status=status.HTTP_502_BAD_GATEWAY)
+
+
+class ShopStripeConnectStatusView(APIView):
+    """
+    GET /api/shops/stripe-connect/status/
+    Refreshes onboarding and payout status for the seller's Stripe Connect account.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        shop = getattr(request.user, 'shop', None)
+        if not shop or not shop.stripe_account_id:
+            return Response({
+                'connected': False,
+                'account_id': getattr(shop, 'stripe_account_id', None),
+                'charges_enabled': False,
+                'payouts_enabled': False,
+                'onboarding_completed': False,
+            }, status=status.HTTP_200_OK)
+
+        from utils.payment_client import payment_client
+        try:
+            acc = payment_client.get_connected_account(shop.stripe_account_id)
+            charges_enabled = acc.get('charges_enabled', False)
+            payouts_enabled = acc.get('payouts_enabled', False)
+            details_submitted = acc.get('details_submitted', False)
+
+            shop.stripe_onboarding_completed = details_submitted
+            shop.save(update_fields=['stripe_onboarding_completed'])
+
+            return Response({
+                'connected': True,
+                'account_id': shop.stripe_account_id,
+                'charges_enabled': charges_enabled,
+                'payouts_enabled': payouts_enabled,
+                'onboarding_completed': shop.stripe_onboarding_completed,
+            }, status=status.HTTP_200_OK)
+        except Exception as exc:
+            logger.error("Failed to fetch shop Stripe account %s: %s", shop.stripe_account_id, exc)
+            return Response({'detail': "We could not load your payout status right now. Please try again later."}, status=status.HTTP_502_BAD_GATEWAY)
