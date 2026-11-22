@@ -37,8 +37,13 @@ class MembershipPlanListView(generics.ListAPIView):
 class MyMembershipView(generics.RetrieveAPIView):
     serializer_class = UserMembershipSerializer
 
-    def get_object(self):
-        return self.request.user.memberships.filter(is_active=True).first()
+    def retrieve(self, request, *args, **kwargs):
+        # Return null (not a blank object) when the user has no active membership,
+        # so the frontend can tell "no membership" apart from "unknown status".
+        membership = request.user.memberships.filter(is_active=True).first()
+        if membership is None:
+            return Response(None)
+        return Response(self.get_serializer(membership).data)
 
 
 class UpgradeMembershipView(APIView):
